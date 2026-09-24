@@ -1,0 +1,113 @@
+---
+title: "d · Gérer la configuration"
+description: ".env, ConfigService, et valider les variables d'environnement au démarrage."
+projet: loup-garou
+duree: 35
+prerequis: Section c (les pipes).
+exercices: 3
+sidebar:
+  order: 4
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Depuis la partie 3, `main.ts` lit `process.env.PORT` directement. Ça fonctionne, mais rien ne dit ce que ton application attend comme variables d'environnement, ni ne prévient si l'une d'elles manque. `@nestjs/config` structure ça.
+
+```bash
+npm install @nestjs/config
+```
+
+```bash title=".env"
+PORT=3000
+NOMBRE_MAX_VILLAGES=50
+```
+
+`ConfigModule.forRoot({ isGlobal: true })` lit ce fichier au démarrage, et rend `ConfigService` injectable partout dans l'application :
+
+```ts title="src/app.module.ts" {2,6}
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+
+@Module({
+	imports: [ConfigModule.forRoot({ isGlobal: true }), /* … */],
+})
+export class AppModule {}
+```
+
+```ts title="src/main.ts" {3,7,8}
+import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { AppModule } from './app.module.js';
+
+async function bootstrap() {
+	const app = await NestFactory.create(AppModule);
+	app.useGlobalPipes(new ValidationPipe());
+	const config = app.get(ConfigService);
+	await app.listen(config.get('PORT') ?? 3000);
+}
+await bootstrap();
+```
+
+`ConfigService` s'injecte aussi dans un service, exactement comme n'importe quel autre provider — plus besoin de toucher à `process.env` où que ce soit dans ton code :
+
+```ts title="src/villages/villages.service.ts" {3,6}
+@Injectable()
+export class VillagesService {
+	constructor(private readonly config: ConfigService) {}
+
+	creer(dto: CreerVillageDto) {
+		const maximum = this.config.get<number>('NOMBRE_MAX_VILLAGES');
+		// …
+	}
+}
+```
+
+## Valider les variables d'environnement
+
+Un `.env` incomplet plante silencieusement plus tard, au premier `undefined` inattendu — bien après le démarrage. L'option `validate` de `ConfigModule.forRoot` vérifie tout **avant**, avec les décorateurs de la section b :
+
+```ts title="src/config/variables-environnement.ts"
+import { IsNumber, Min } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
+import { validateSync } from 'class-validator';
+
+class VariablesEnvironnement {
+	@IsNumber()
+	PORT: number = 3000;
+
+	@IsNumber()
+	@Min(1)
+	NOMBRE_MAX_VILLAGES: number;
+}
+
+export function validerEnvironnement(config: Record<string, unknown>) {
+	const validees = plainToInstance(VariablesEnvironnement, config, { enableImplicitConversion: true });
+	const erreurs = validateSync(validees, { skipMissingProperties: false });
+	if (erreurs.length > 0) throw new Error(erreurs.toString());
+	return validees;
+}
+```
+
+```ts title="src/app.module.ts" {2}
+ConfigModule.forRoot({ isGlobal: true, validate: validerEnvironnement }),
+```
+
+Retire `NOMBRE_MAX_VILLAGES` du `.env`, et le serveur refuse de démarrer — au lieu de démarrer normalement et d'échouer beaucoup plus tard, en pleine requête.
+
+<Exercices partie={4} de={11} a={13}>
+
+<Exercice numero="4.11" titre="Un .env pour la marketplace">
+Installe `@nestjs/config`, ajoute `ConfigModule.forRoot({ isGlobal: true })` à `AppModule`. Crée un `.env` avec `PORT` et `NOMBRE_MAX_PRODUITS`. Fais lire `PORT` par `main.ts` via `ConfigService`, à la place de `process.env.PORT` direct.
+</Exercice>
+
+<Exercice numero="4.12" titre="Limiter la création de produits">
+Injecte `ConfigService` dans `ProduitsService`. Dans la méthode qui crée un produit, refuse-la (avec `BadRequestException`) si le nombre de produits existants a atteint `NOMBRE_MAX_PRODUITS`. Vérifie avec une petite valeur (par exemple `1`) que la deuxième création échoue bien.
+</Exercice>
+
+<Exercice numero="4.13" titre="Casser la validation, exprès">
+Ajoute `validerEnvironnement` (ci-dessus, avec `NOMBRE_MAX_PRODUITS` à la place de `NOMBRE_MAX_VILLAGES`) à `ConfigModule.forRoot`. Retire temporairement `NOMBRE_MAX_PRODUITS` de ton `.env`, et relance le serveur : note le message d'erreur exact au démarrage. Remets la variable pour que l'application redémarre normalement.
+</Exercice>
+
+</Exercices>

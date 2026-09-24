@@ -1,0 +1,53 @@
+---
+title: "a · Les DTO"
+description: "Donner une forme typée à ce que @Body() reçoit."
+projet: loup-garou
+duree: 30
+prerequis: "Partie 3 terminée : controllers, modules, services et injection de dépendances."
+exercices: 3
+sidebar:
+  order: 1
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+En partie 3, `POST /api/villages` acceptait `@Body() village: Village` — mais rien ne garantissait que le corps envoyé ressemblait vraiment à un `Village`. Un **DTO** (*Data Transfer Object*) décrit la forme des données attendues à l'entrée d'une route.
+
+```ts title="src/villages/dto/creer-village.dto.ts"
+export class CreerVillageDto {
+	nombreDeJoueurs: number;
+	rolesEnJeu: string[];
+}
+```
+
+```ts title="src/villages/villages.controller.ts" {2,7}
+import { Body, Controller, Post } from '@nestjs/common';
+import { CreerVillageDto } from './dto/creer-village.dto.js';
+
+@Controller('api/villages')
+export class VillagesController {
+	@Post()
+	creer(@Body() dto: CreerVillageDto) {
+		// dto.nombreDeJoueurs et dto.rolesEnJeu sont typés
+	}
+}
+```
+
+C'est déjà mieux qu'un `any` implicite : ton éditeur connaît `dto.nombreDeJoueurs`, et une faute de frappe sur son nom est détectée à la compilation. Mais ce n'est qu'une **promesse TypeScript** — au moment où `tsc` a fini son travail, elle disparaît. Rien n'empêche encore un client d'envoyer `{ "nombreDeJoueurs": "beaucoup" }`, une chaîne au lieu d'un nombre : à l'exécution, personne ne vérifie. La section b comble ce trou.
+
+<Exercices partie={4} de={1} a={3}>
+
+<Exercice numero="4.1" titre="Un DTO pour créer un produit">
+Crée `CreerProduitDto`, avec `nom: string`, `prix: number` et `categorie: string`. Utilise-le dans `@Body()` sur `POST /api/produits`.
+</Exercice>
+
+<Exercice numero="4.2" titre="Un champ pour les variantes">
+Ajoute un champ `variantes: string[]` à `CreerProduitDto` (les tailles ou coloris disponibles pour ce produit). Vérifie avec `curl` qu'un produit créé avec `"variantes": ["S", "M", "L"]` les renvoie bien telles quelles.
+</Exercice>
+
+<Exercice numero="4.3" titre="La preuve que rien n'est encore vérifié">
+Envoie un `POST /api/produits` avec un `prix` négatif, et un autre sans le champ `nom` du tout. Observe : les deux sont acceptés, avec un statut `201`. Garde ces deux requêtes sous le coude, tu les rejoueras en section b.
+</Exercice>
+
+</Exercices>

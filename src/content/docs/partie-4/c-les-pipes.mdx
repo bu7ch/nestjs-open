@@ -1,0 +1,86 @@
+---
+title: "c · Les pipes"
+description: "La mécanique générale derrière ValidationPipe : transformer et valider un argument."
+projet: loup-garou
+duree: 35
+prerequis: Section b (class-validator).
+exercices: 3
+sidebar:
+  order: 3
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+`ValidationPipe` est, en fait, un cas particulier d'une idée plus générale : un **pipe** transforme ou valide un argument avant qu'il n'atteigne ta méthode. Tu peux en appliquer un à un seul paramètre, pas seulement à tout le corps de la requête.
+
+## Un pipe fourni par NestJS
+
+`ParseIntPipe` convertit un paramètre d'URL — toujours une chaîne de caractères — en nombre, et rejette la requête avec un `400` s'il n'est pas numérique :
+
+```ts
+import { Controller, Get, Param, ParseIntPipe } from '@nestjs/common';
+
+@Get(':id')
+trouverUn(@Param('id', ParseIntPipe) id: number) {
+	// id est déjà un number ici, garanti
+}
+```
+
+Sans lui, `id` aurait été la chaîne `"1"`, pas le nombre `1` — et `/api/villages/abc` aurait atteint ta méthode tel quel, à toi de le détecter.
+
+## Écrire son propre pipe
+
+Un pipe est une classe qui implémente `PipeTransform`, avec une seule méthode, `transform` :
+
+```ts title="src/villages/pipes/role-valide.pipe.ts"
+import { BadRequestException, Injectable, PipeTransform } from '@nestjs/common';
+
+const ROLES = ['loup-garou', 'villageois', 'voyante'] as const;
+
+@Injectable()
+export class RoleValidePipe implements PipeTransform {
+	transform(valeur: string) {
+		if (!ROLES.includes(valeur as (typeof ROLES)[number])) {
+			throw new BadRequestException(`Rôle inconnu : ${valeur}`);
+		}
+		return valeur;
+	}
+}
+```
+
+```ts
+@Get('role/:role')
+trouverParRole(@Param('role', RoleValidePipe) role: string) {
+	// role vaut forcément 'loup-garou', 'villageois' ou 'voyante'
+}
+```
+
+## Une valeur par défaut
+
+`DefaultValuePipe` fixe une valeur quand le paramètre est absent — utile pour une query string optionnelle, à combiner avec un autre pipe :
+
+```ts
+import { DefaultValuePipe, Query } from '@nestjs/common';
+
+@Get()
+trouverTous(@Query('limite', new DefaultValuePipe(10), ParseIntPipe) limite: number) {
+	// limite vaut 10 si absente, sinon sa valeur convertie en nombre
+}
+```
+
+<Exercices partie={4} de={8} a={10}>
+
+<Exercice numero="4.8" titre="ParseIntPipe">
+Applique `ParseIntPipe` au paramètre `id` de `GET /api/produits/:id`. Vérifie que `/api/produits/1` fonctionne toujours, et que `/api/produits/abc` échoue désormais avec un `400` — sans que tu aies écrit le moindre `if`.
+</Exercice>
+
+<Exercice numero="4.9" titre="Un pipe personnalisé">
+Écris `CategorieValidePipe`, sur le modèle de `RoleValidePipe` ci-dessus, avec la même liste de catégories que ton DTO (section b). Ajoute une route `GET /api/produits/categorie/:categorie` qui l'utilise, et renvoie les produits de cette catégorie.
+</Exercice>
+
+<Exercice numero="4.10" titre="Une limite par défaut">
+Ajoute `?limite=...` à `GET /api/produits`, avec `DefaultValuePipe(10)` combiné à `ParseIntPipe`, pour ne renvoyer que les `limite` premiers produits. Vérifie que l'appeler sans le paramètre renvoie bien jusqu'à 10 produits, et qu'avec `?limite=1` un seul est renvoyé.
+</Exercice>
+
+</Exercices>

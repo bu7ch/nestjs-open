@@ -1,0 +1,88 @@
+---
+title: "b · class-validator"
+description: "Vérifier la forme d'un DTO pour de vrai, à l'exécution, avec des décorateurs."
+projet: loup-garou
+duree: 40
+prerequis: Section a (les DTO).
+exercices: 4
+sidebar:
+  order: 2
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+**class-validator** ajoute des règles à un DTO, sous forme de décorateurs — encore une fois, le même principe qu'en partie 1. **class-transformer** l'accompagne : il transforme le JSON brut reçu en véritable instance de ta classe, pour que les décorateurs aient quelque chose à inspecter.
+
+```bash
+npm install class-validator class-transformer
+```
+
+```ts title="src/villages/dto/creer-village.dto.ts" {1,4,5,8,9}
+import { IsArray, IsInt, IsString, Min } from 'class-validator';
+
+export class CreerVillageDto {
+	@IsInt()
+	@Min(3)
+	nombreDeJoueurs: number;
+
+	@IsArray()
+	@IsString({ each: true })
+	rolesEnJeu: string[];
+}
+```
+
+Ces décorateurs seuls ne suffisent pas : il faut dire à NestJS de les faire respecter. C'est le rôle de `ValidationPipe`, à activer une fois pour toute l'application :
+
+```ts title="src/main.ts" {2,6}
+import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
+import { AppModule } from './app.module.js';
+
+async function bootstrap() {
+	const app = await NestFactory.create(AppModule);
+	app.useGlobalPipes(new ValidationPipe());
+	await app.listen(process.env.PORT ?? 3000);
+}
+await bootstrap();
+```
+
+À partir de là, un village créé avec `nombreDeJoueurs: 1` reçoit un `400`, avec le détail de chaque règle violée :
+
+```json
+{
+	"message": ["nombreDeJoueurs must not be less than 3"],
+	"error": "Bad Request",
+	"statusCode": 400
+}
+```
+
+## Champs optionnels, champs superflus
+
+`@IsOptional()` dispense un champ des autres décorateurs quand il est absent — mais continue de les appliquer s'il est présent. `whitelist: true`, dans les options de `ValidationPipe`, retire silencieusement les champs qui n'ont aucun décorateur dans le DTO ; `forbidNonWhitelisted: true` les rejette carrément au lieu de les ignorer :
+
+```ts
+app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }));
+```
+
+Sans ça, un client pourrait glisser un champ que ton DTO n'attend pas — sans que rien ne le signale.
+
+<Exercices partie={4} de={4} a={7}>
+
+<Exercice numero="4.4" titre="Valider les produits">
+Installe `class-validator` et `class-transformer`. Ajoute `@IsString() @IsNotEmpty()` sur `nom`, `@IsNumber() @Min(0)` sur `prix`, `@IsIn([...])` sur `categorie` avec une liste fixe de catégories autorisées. Active `ValidationPipe` globalement dans `main.ts`. Rejoue les deux requêtes de l'exercice 4.3 : elles doivent maintenant échouer avec un `400` et la liste des règles violées.
+</Exercice>
+
+<Exercice numero="4.5" titre="Un champ optionnel">
+Rends `variantes` optionnel avec `@IsOptional()` (garde `@IsArray()` et `@IsString({ each: true })` à côté). Vérifie qu'un produit créé sans ce champ est accepté, et qu'un produit créé avec passe toujours la validation.
+</Exercice>
+
+<Exercice numero="4.6" titre="Refuser les champs en trop">
+Active `whitelist: true` et `forbidNonWhitelisted: true`. Envoie un `POST /api/produits` valide, avec un champ en plus qui n'existe pas dans ton DTO (par exemple `"remise": 50`). Vérifie qu'il est désormais rejeté, avec un message qui le nomme.
+</Exercice>
+
+<Exercice numero="4.7" titre="Valider chaque élément d'un tableau">
+Envoie `"variantes": ["S", 42, "L"]` (un nombre glissé au milieu des chaînes). Vérifie que `@IsString({ each: true })` le détecte et rejette la requête — l'option `each: true` s'applique à chaque élément du tableau, pas au tableau lui-même.
+</Exercice>
+
+</Exercices>

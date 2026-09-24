@@ -1,0 +1,121 @@
+---
+title: "e · Aller plus loin : Joi et Zod"
+description: "Deux autres bibliothèques de validation, pour situer class-validator parmi ses alternatives."
+duree: 30
+prerequis: Section d (gérer la configuration). Section bonus, non nécessaire pour la suite du cours.
+exercices: 3
+sidebar:
+  order: 5
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+`class-validator` n'est pas la seule bibliothèque de validation en JavaScript. Cette section te fait rencontrer deux autres poids lourds — pas pour les préférer, mais pour que tu reconnaisses leur style quand tu les croiseras dans un autre projet.
+
+## Joi : des schémas, sans classes
+
+**Joi** décrit une forme attendue avec un objet, plutôt qu'avec des décorateurs sur une classe. C'est l'outil le plus utilisé pour valider les **variables d'environnement** — `@nestjs/config` a même une option dédiée, `validationSchema`, qui fait exactement ce que tu as écrit à la main en section d avec `class-validator` :
+
+```bash
+npm install joi
+```
+
+```ts title="src/app.module.ts" {3,8-11}
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import Joi from 'joi';
+
+@Module({
+	imports: [
+		ConfigModule.forRoot({
+			isGlobal: true,
+			validationSchema: Joi.object({
+				PORT: Joi.number().default(3000),
+				NOMBRE_MAX_PRODUITS: Joi.number().required(),
+			}),
+		}),
+	],
+})
+export class AppModule {}
+```
+
+Retire `NOMBRE_MAX_PRODUITS` du `.env`, et le message est le même type d'erreur qu'en section d, formulé différemment : `Config validation error: NOMBRE_MAX_PRODUITS: "NOMBRE_MAX_PRODUITS" is required`.
+
+## Zod : des schémas, pensés pour TypeScript
+
+**Zod** décrit lui aussi une forme avec un objet — mais il **infère** le type TypeScript directement depuis le schéma, sans avoir à écrire les deux séparément comme avec une classe et ses décorateurs.
+
+```bash
+npm install zod
+```
+
+```ts title="src/produits/dto/creer-produit.schema.ts"
+import { z } from 'zod';
+
+export const creerProduitSchema = z.object({
+	nom: z.string().min(1),
+	prix: z.number().min(0),
+	categorie: z.enum(['arme', 'armure', 'potion']),
+});
+
+export type CreerProduitDto = z.infer<typeof creerProduitSchema>;
+```
+
+`CreerProduitDto` n'est écrit nulle part : `z.infer<typeof creerProduitSchema>` le déduit du schéma. Change le schéma, le type suit tout seul — impossible qu'ils divergent.
+
+NestJS n'a pas d'intégration native pour Zod, contrairement à `class-validator` : il faut un pipe, comme ceux que tu as écrits en section c.
+
+```ts title="src/common/zod-validation.pipe.ts"
+import { BadRequestException, Injectable, PipeTransform } from '@nestjs/common';
+import type { ZodType } from 'zod';
+
+@Injectable()
+export class ZodValidationPipe implements PipeTransform {
+	constructor(private readonly schema: ZodType) {}
+
+	transform(valeur: unknown) {
+		const resultat = this.schema.safeParse(valeur);
+		if (!resultat.success) {
+			throw new BadRequestException(resultat.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`));
+		}
+		return resultat.data;
+	}
+}
+```
+
+```ts title="src/produits/produits.controller.ts" {2}
+@Post()
+creer(@Body(new ZodValidationPipe(creerProduitSchema)) dto: CreerProduitDto) {
+	return this.produitsService.creer(dto);
+}
+```
+
+`safeParse` ne lève jamais d'exception : il renvoie `{ success: true, data }` ou `{ success: false, error }`, à toi de décider quoi en faire — ici, une `BadRequestException` avec le détail de chaque champ en tort.
+
+## Alors, lequel choisir ?
+
+| | class-validator | Joi | Zod |
+|---|---|---|---|
+| Style | décorateurs sur une classe | schéma (objet) | schéma (objet) |
+| Le type TypeScript | la classe **est** le type | à écrire séparément | inféré du schéma |
+| Intégration NestJS | native (`ValidationPipe`) | native, pour la config (`validationSchema`) | aucune, un pipe à écrire |
+| Le plus utilisé pour | les DTO d'une API NestJS | les variables d'environnement | les DTO, hors de l'écosystème NestJS |
+
+Il n'y a pas de mauvais choix — seulement des habitudes d'équipe différentes. Le cours continue avec `class-validator`, l'option la mieux intégrée à NestJS ; retiens surtout que **valider une entrée, quelle que soit la bibliothèque, est non négociable**.
+
+<Exercices partie={4} de={14} a={16}>
+
+<Exercice numero="4.14" titre="Les variables d'environnement avec Joi">
+Remplace `validerEnvironnement` (section d) par un schéma Joi équivalent, passé à `validationSchema`. Vérifie que ton `.env` complet démarre toujours normalement, et qu'un `.env` sans `NOMBRE_MAX_PRODUITS` refuse de démarrer, avec un message qui le nomme.
+</Exercice>
+
+<Exercice numero="4.15" titre="Un schéma Zod pour les produits">
+Installe `zod`. Écris `creerProduitSchema`, avec `nom`, `prix` et `categorie` (une valeur parmi une liste fixe, avec `z.enum`). Exporte le type déduit avec `z.infer`.
+</Exercice>
+
+<Exercice numero="4.16" titre="Un pipe Zod">
+Écris `ZodValidationPipe` (ci-dessus). Applique-le à `POST /api/produits`, à la place de `class-validator`, avec ton schéma de l'exercice précédent. Vérifie qu'un produit invalide échoue avec un `400` détaillé, et qu'un produit valide est créé normalement.
+</Exercice>
+
+</Exercices>
