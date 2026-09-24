@@ -1,0 +1,48 @@
+---
+// Titre du site (surcharge) : sur mobile, dans une section de leçon, le nom du site
+// laisse la place à « Partie 8, section c » (le logo reste le lien vers l'accueil).
+import Default from '@astrojs/starlight/components/SiteTitle.astro';
+import { situer } from '../lecon';
+
+const { entry, hasSidebar } = Astro.locals.starlightRoute;
+const situation = hasSidebar ? situer(entry.id, Astro.currentLocale) : undefined;
+const contexte = situation?.lettre
+	? Astro.locals.t('lecon.contexte', { n: situation.partie, lettre: situation.lettre })
+	: undefined;
+---
+
+<div class:list={['nj-site-title', { 'avec-contexte': contexte }]}>
+	<Default />
+	{contexte && <span class="contexte">{contexte}</span>}
+</div>
+
+<style>
+	.nj-site-title {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		min-width: 0;
+	}
+	.contexte {
+		display: none;
+	}
+	@media (max-width: 50rem) {
+		/* Le nom du site reste lu (lien « NestJS Open »), seul le logo est visible. */
+		.avec-contexte :global(.site-title span) {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			overflow: hidden;
+			clip: rect(0 0 0 0);
+			white-space: nowrap;
+		}
+		.contexte {
+			display: block;
+			font-size: 0.9375rem;
+			color: var(--nj-text-muted);
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+	}
+</style>

@@ -2,12 +2,25 @@
 // Titre de leçon (surcharge de PageTitle) : badges projet / durée / exercices
 // et encadré « Avant de commencer » tirés du frontmatter.
 import LectureProgression from './LectureProgression.astro';
+import { situer } from '../lecon';
 
 const { data } = Astro.locals.starlightRoute.entry;
 const { projet, duree, exercices, prerequis } = data;
 const t = Astro.locals.t;
 const aDesBadges = Boolean(projet || duree || exercices);
+// Fil d'Ariane sur les sections (pas sur l'introduction d'une partie).
+const situation = situer(Astro.locals.starlightRoute.entry.id, Astro.currentLocale);
 ---
+
+{
+	situation?.lettre && (
+		<nav class="fil-ariane" aria-label={t('lecon.filAriane')}>
+			<a href={situation.hrefPartie}>{t('lecon.partie', { n: situation.partie, titre: situation.titrePartie })}</a>
+			<span aria-hidden="true">/</span>
+			<span aria-current="page">{t('lecon.section', { lettre: situation.lettre })}</span>
+		</nav>
+	)
+}
 
 <div class="titre-lecon">
 	<h1 id="_top">{data.title}</h1>
@@ -32,6 +45,20 @@ const aDesBadges = Boolean(projet || duree || exercices);
 {Astro.locals.starlightRoute.hasSidebar && <LectureProgression />}
 
 <style>
+	.fil-ariane {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		margin-top: 1rem;
+		font-size: 0.875rem;
+		color: var(--nj-text-muted);
+	}
+	.fil-ariane a {
+		color: var(--nj-text-muted);
+	}
+	.fil-ariane a:hover {
+		color: var(--sl-color-text-accent);
+	}
 	.titre-lecon {
 		display: flex;
 		flex-direction: column;

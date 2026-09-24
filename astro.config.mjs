@@ -26,6 +26,8 @@ export default defineConfig({
 				'@fontsource/jetbrains-mono/600.css',
 				'./src/styles/custom.css',
 			],
+			// Ajoute « Exercices N.x à N.y » au sommaire « Sur cette page ».
+			routeMiddleware: './src/routeData.ts',
 			components: {
 				// Bascule jour/nuit au lieu du <select> Clair/Sombre/Auto.
 				ThemeSelect: './src/components/ThemeSelect.astro',
@@ -37,6 +39,8 @@ export default defineConfig({
 				Sidebar: './src/components/Sidebar.astro',
 				// Précédent / Suivant : cartes, ou barre fixe en bas sur mobile.
 				Pagination: './src/components/Pagination.astro',
+				// Sur mobile, « Partie 8, section c » à côté du logo.
+				SiteTitle: './src/components/SiteTitle.astro',
 			},
 			sidebar: [
 				{

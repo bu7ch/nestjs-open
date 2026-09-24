@@ -22,5 +22,9 @@
 	"progression.terminee": "terminée",
 	"progression.nav": "Parties du cours",
 	"pagination.sectionSuivante": "Section suivante",
-	"pagination.nav": "Navigation entre sections"
+	"pagination.nav": "Navigation entre sections",
+	"lecon.filAriane": "Fil d'Ariane",
+	"lecon.partie": "Partie {{n}} : {{titre}}",
+	"lecon.section": "Section {{lettre}}",
+	"lecon.contexte": "Partie {{n}}, section {{lettre}}"
 }

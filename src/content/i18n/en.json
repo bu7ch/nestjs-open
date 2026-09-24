@@ -22,5 +22,9 @@
 	"progression.terminee": "completed",
 	"progression.nav": "Course parts",
 	"pagination.sectionSuivante": "Next section",
-	"pagination.nav": "Section navigation"
+	"pagination.nav": "Section navigation",
+	"lecon.filAriane": "Breadcrumb",
+	"lecon.partie": "Part {{n}}: {{titre}}",
+	"lecon.section": "Section {{lettre}}",
+	"lecon.contexte": "Part {{n}}, section {{lettre}}"
 }
