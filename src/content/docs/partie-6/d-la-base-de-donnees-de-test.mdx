@@ -1,0 +1,251 @@
+---
+title: "d · La base de données de test"
+description: "Des tests de bout en bout avec un vrai PostgreSQL, sans jamais toucher à tes vraies données."
+projet: loup-garou
+duree: 65
+prerequis: Section c (les tests de bout en bout) et partie 5.
+exercices: 3
+sidebar:
+  order: 4
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Les doublures de la section b ne disent pas si tes requêtes SQL fonctionnent vraiment. Pour le savoir, il faut un vrai PostgreSQL. Mais un test qui écrit dans ta base de développement la salit, et un test qui **vide** des tables (on va le faire) l'efface. On utilise donc une base à part, dédiée aux tests, qu'on peut détruire et recréer sans regret.
+
+Dans le conteneur de la partie 5, crée-la à côté de l'autre :
+
+```bash
+docker compose exec db psql -U loupgarou -d loupgarou -c 'CREATE DATABASE loupgarou_test;'
+```
+
+## Une configuration pour les tests
+
+Vitest définit `NODE_ENV=test` quand il s'exécute. On s'en sert pour choisir le fichier d'environnement : `.env` en temps normal, `.env.test` pendant les tests.
+
+```bash title=".env.test"
+PORT=3001
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=loupgarou
+DB_PASSWORD=loupgarou
+DB_NAME=loupgarou_test
+NOMBRE_MAX_VILLAGES=50
+```
+
+Le fichier `.env.test` **remplace** `.env` : il doit contenir toutes les variables dont l'application a besoin, y compris celles que la validation de la partie 4 exige (ici `NOMBRE_MAX_VILLAGES`). S'il en manque une, les tests échouent avec `property NOMBRE_MAX_VILLAGES has failed the following constraints`, suivi d'un message trompeur, `Cannot read properties of undefined (reading 'close')` : ce dernier n'est qu'une conséquence, l'application n'ayant jamais démarré.
+
+```ts title="src/app.module.ts" {3,8,10,11,21,22}
+ConfigModule.forRoot({
+	isGlobal: true,
+	envFilePath: process.env.NODE_ENV === 'test' ? '.env.test' : '.env',
+}),
+TypeOrmModule.forRootAsync({
+	inject: [ConfigService],
+	useFactory: (config: ConfigService) => {
+		const enTest = process.env.NODE_ENV === 'test';
+		const base = String(config.get('DB_NAME'));
+		if (enTest && !base.endsWith('_test')) {
+			throw new Error(`Base « ${base} » refusée en test : son nom doit finir par _test`);
+		}
+		return {
+			type: 'postgres' as const,
+			host: config.get('DB_HOST'),
+			port: config.get('DB_PORT'),
+			username: config.get('DB_USER'),
+			password: config.get('DB_PASSWORD'),
+			database: base,
+			autoLoadEntities: true,
+			synchronize: enTest,
+			dropSchema: enTest,
+		};
+	},
+}),
+```
+
+- Ligne 3 : le bon fichier `.env` selon le contexte.
+- Lignes 21 et 22 : en test seulement, `dropSchema` supprime **toutes les tables** au démarrage de l'application, et `synchronize` les recrée d'après les entités. Chaque lancement des tests part donc d'un schéma neuf. (On accepte `synchronize` ici, malgré la section d de la partie 5, parce que la base de test est jetable ; elle ne teste en revanche pas tes migrations.)
+- Lignes 10 et 11 : c'est le **garde-fou**. `dropSchema` sur la mauvaise base, c'est toutes tes données perdues, et il suffit d'une variable d'environnement mal réglée pour y arriver. Si le nom de la base ne finit pas par `_test`, l'application refuse de démarrer, avant d'avoir touché à quoi que ce soit. Lance les tests avec `DB_NAME=loupgarou npm run test:e2e` : l'erreur `Base « loupgarou » refusée en test` s'affiche, et une table de ta base de développement reste intacte.
+
+## Des routes à tester
+
+Pour un test avec la base, il faut des routes qui l'utilisent. `VillagesService` (partie 5) reçoit son contrôleur, avec des DTO validés comme en partie 4 :
+
+```ts title="src/villages/dto/rejoindre-village.dto.ts"
+import { IsIn, IsInt } from 'class-validator';
+
+export class RejoindreVillageDto {
+	@IsInt()
+	utilisateurId: number;
+
+	@IsIn(['loup-garou', 'villageois', 'voyante'])
+	role: string;
+}
+```
+
+```ts title="src/villages/villages.controller.ts"
+import { Body, Controller, Get, Param, ParseIntPipe, Post } from '@nestjs/common';
+import { CreerVillageDto } from './dto/creer-village.dto.js';
+import { RejoindreVillageDto } from './dto/rejoindre-village.dto.js';
+import { VillagesService } from './villages.service.js';
+
+@Controller('api/villages')
+export class VillagesController {
+	constructor(private readonly villagesService: VillagesService) {}
+
+	@Post()
+	creer(@Body() dto: CreerVillageDto) {
+		return this.villagesService.creer(dto.nom);
+	}
+
+	@Get(':id')
+	trouverUn(@Param('id', ParseIntPipe) id: number) {
+		return this.villagesService.trouverUn(id);
+	}
+
+	@Post(':id/rejoindre')
+	rejoindre(@Param('id', ParseIntPipe) id: number, @Body() dto: RejoindreVillageDto) {
+		return this.villagesService.rejoindre(id, dto.utilisateurId, dto.role);
+	}
+}
+```
+
+`CreerVillageDto` valide un `nom` non vide. Un petit `UtilisateursController` expose `POST /api/utilisateurs` (un `pseudo` non vide), pour pouvoir créer des joueurs pendant les tests.
+
+## Le test
+
+```ts title="test/villages.e2e-spec.ts" {13,17,21}
+import { INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import request from 'supertest';
+import { DataSource } from 'typeorm';
+import { AppModule } from '../src/app.module.js';
+import { configurerApp } from '../src/configurer-app.js';
+
+describe('Villages (e2e, avec la vraie base)', () => {
+	let app: INestApplication;
+	let dataSource: DataSource;
+
+	beforeAll(async () => {
+		const module = await Test.createTestingModule({ imports: [AppModule] }).compile();
+		app = module.createNestApplication();
+		configurerApp(app);
+		await app.init();
+		dataSource = app.get(DataSource);
+	});
+
+	beforeEach(async () => {
+		await dataSource.query('TRUNCATE TABLE participations, villages, utilisateurs RESTART IDENTITY');
+	});
+
+	afterAll(async () => {
+		await app.close();
+	});
+
+	it('crée un village, puis le relit', async () => {
+		const creation = await request(app.getHttpServer()).post('/api/villages').send({ nom: 'Lune Rousse' }).expect(201);
+		expect(creation.body).toMatchObject({ id: 1, nom: 'Lune Rousse' });
+
+		const lecture = await request(app.getHttpServer()).get('/api/villages/1').expect(200);
+		expect(lecture.body).toEqual({ id: 1, nom: 'Lune Rousse', participations: [] });
+	});
+
+	it('fait rejoindre un joueur, avec son pseudo dans la réponse', async () => {
+		await request(app.getHttpServer()).post('/api/villages').send({ nom: 'Lune Rousse' });
+		await request(app.getHttpServer()).post('/api/utilisateurs').send({ pseudo: 'LouveGrise' });
+
+		await request(app.getHttpServer())
+			.post('/api/villages/1/rejoindre')
+			.send({ utilisateurId: 1, role: 'loup-garou' })
+			.expect(201);
+
+		const lecture = await request(app.getHttpServer()).get('/api/villages/1').expect(200);
+		expect(lecture.body.participations).toHaveLength(1);
+		expect(lecture.body.participations[0]).toMatchObject({
+			role: 'loup-garou',
+			vivant: true,
+			utilisateur: { pseudo: 'LouveGrise' },
+		});
+	});
+
+	it('répond 404 pour un village inconnu', async () => {
+		await request(app.getHttpServer()).get('/api/villages/99').expect(404);
+	});
+
+	it('répond 404 si l\'utilisateur n\'existe pas, et n\'écrit rien', async () => {
+		await request(app.getHttpServer()).post('/api/villages').send({ nom: 'Lune Rousse' });
+		await request(app.getHttpServer())
+			.post('/api/villages/1/rejoindre')
+			.send({ utilisateurId: 42, role: 'voyante' })
+			.expect(404);
+
+		const [{ total }] = await dataSource.query('SELECT count(*)::int AS total FROM participations');
+		expect(total).toBe(0);
+	});
+
+	it('répond 400 pour un rôle inconnu', async () => {
+		await request(app.getHttpServer()).post('/api/villages').send({ nom: 'Lune Rousse' });
+		const reponse = await request(app.getHttpServer())
+			.post('/api/villages/1/rejoindre')
+			.send({ utilisateurId: 1, role: 'sorcière' })
+			.expect(400);
+		expect(reponse.body.message[0]).toContain('role must be one of the following values');
+	});
+});
+```
+
+Cette fois le test importe `AppModule`, donc toute l'application, avec sa vraie connexion à la base. Trois lignes sont nouvelles :
+
+- Ligne 13 : `AppModule` au lieu d'un seul module.
+- Ligne 17 : on récupère `DataSource`, la connexion TypeORM, pour parler directement à la base depuis le test.
+- Ligne 21 : `TRUNCATE … RESTART IDENTITY` vide les tables **avant chaque test** et remet les identifiants à 1 (tu le connais : c'est la commande du script de données de test de la partie 5). Le test n'a plus à se soucier de ce que les précédents ont laissé.
+
+Le dernier test des participations montre l'intérêt d'une vraie base : il vérifie **directement dans la table** que rien n'a été écrit, ce qu'aucune doublure ne pourrait prouver.
+
+## Des tests isolés
+
+Retire la ligne 21, et un test tombe alors que son code est correct :
+
+```text
+AssertionError: expected 1 to be +0 // Object.is equality
+```
+
+C'est le test « n'écrit rien » : il compte les participations, et en trouve une, laissée par le test **précédent**. Ce n'est pas celui qui a fait le désordre qui échoue, mais celui qui passe derrière : c'est ce qui rend ces bugs pénibles à trouver. Chaque test doit partir d'une base vide, quel que soit l'ordre dans lequel on les lance.
+
+## Un seul fichier à la fois
+
+Vitest exécute **plusieurs fichiers de test en parallèle**, dans des processus séparés. Si deux fichiers e2e utilisent la même base, l'un peut vider les tables pendant que l'autre les lit. Le symptôme est un échec **intermittent**, qui n'apparaît pas à chaque lancement, sans que le code ait changé :
+
+```text
+Error: expected 200 "OK", got 404 "Not Found"
+```
+
+Dans nos essais, on ne le reproduit à coup sûr qu'en ralentissant artificiellement un test (avec `dropSchema`, PostgreSQL fait souvent attendre le second fichier, ce qui cache le problème : ne compte pas dessus). La parade est de désactiver le parallélisme entre fichiers, dans `vitest.config.e2e.ts` :
+
+```ts title="vitest.config.e2e.ts" {5}
+test: {
+  globals: true,
+  root: './',
+  include: ['**/*.e2e-spec.ts'],
+  fileParallelism: false,
+},
+```
+
+Les fichiers passent l'un après l'autre. C'est un peu plus lent, mais les résultats sont les mêmes à chaque lancement : mieux vaut un test lent et fiable qu'un test rapide qui échoue un jour sur trois.
+
+<Exercices partie={6} de={12} a={14}>
+
+<Exercice numero="6.12" titre="Une base de test pour la marketplace">
+Crée la base `marketplace_test` dans ton conteneur, et un `.env.test` qui la vise. Choisis le fichier d'environnement selon `NODE_ENV`, ajoute `synchronize` et `dropSchema` en test, et le garde-fou sur le suffixe `_test`. Ajoute à `.env.test` les variables que ta validation de la partie 4 exige (`NOMBRE_MAX_PRODUITS`). Vérifie avec `\dt` que tes tests créent les tables dans `marketplace_test` et pas dans l'autre, et que `DB_NAME=marketplace npm run test:e2e` est refusé sans toucher à la base.
+</Exercice>
+
+<Exercice numero="6.13" titre="Le cycle complet des vendeurs">
+Écris un test e2e qui déroule les routes de la partie 5 : créer un vendeur (`POST`), le relire (`GET`), le renommer (`PATCH`), le supprimer (`DELETE`, `204`), puis vérifier qu'un `GET` répond `404`. Ajoute le cas de l'exercice 5.13 : après avoir créé un produit, sa variante et une commande, supprimer le vendeur doit répondre `409`.
+</Exercice>
+
+<Exercice numero="6.14" titre="Des tests qui ne se marchent pas dessus">
+Ajoute un `TRUNCATE … RESTART IDENTITY` de tes cinq tables dans un `beforeEach`. Retire-le brièvement, et note quel test tombe et pourquoi. Ajoute ensuite un deuxième fichier e2e qui utilise la même base, et `fileParallelism: false` dans `vitest.config.e2e.ts`. Lance `npm run test:e2e` cinq fois de suite : le résultat doit être identique à chaque fois.
+</Exercice>
+
+</Exercices>

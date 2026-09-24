@@ -1,0 +1,281 @@
+---
+title: "a · Les tests unitaires"
+description: "Écrire des tests pour une fonction seule : sans serveur, sans base, en quelques millisecondes."
+projet: loup-garou
+duree: 60
+prerequis: Partie 5 terminée.
+exercices: 5
+sidebar:
+  order: 1
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Un **test unitaire** est un petit programme qui appelle un morceau de ton code — une fonction, une méthode — avec des valeurs choisies, et vérifie que le résultat est celui qu'on attend. Pas de serveur, pas de base de données, pas de `curl` : il s'exécute en quelques millisecondes, et tu peux en lancer des centaines à chaque modification.
+
+Pour s'y prêter, le code doit être facile à isoler. Le moteur d'un Loup-Garou est un bon candidat : ses règles (qui gagne ? qui est éliminé ?) ne dépendent d'aucune requête HTTP ni d'aucune table. On les écrit dans un service, sans rien y mélanger d'autre :
+
+```ts title="src/moteur/moteur.service.ts" {18}
+import { Injectable } from '@nestjs/common';
+
+export type Role = 'loup-garou' | 'villageois' | 'voyante';
+
+export interface Joueur {
+	pseudo: string;
+	role: Role;
+	vivant: boolean;
+}
+
+export interface Vote {
+	votant: string;
+	cible: string;
+}
+
+@Injectable()
+export class MoteurService {
+	distribuerRoles(pseudos: string[], aleatoire: () => number = Math.random): Joueur[] {
+		if (pseudos.length < 4) throw new Error('Il faut au moins 4 joueurs');
+		const loups = Math.floor(pseudos.length / 4);
+		const roles: Role[] = [
+			...Array<Role>(loups).fill('loup-garou'),
+			'voyante',
+			...Array<Role>(pseudos.length - loups - 1).fill('villageois'),
+		];
+		for (let i = roles.length - 1; i > 0; i--) {
+			const j = Math.floor(aleatoire() * (i + 1));
+			[roles[i], roles[j]] = [roles[j], roles[i]];
+		}
+		return pseudos.map((pseudo, i) => ({ pseudo, role: roles[i], vivant: true }));
+	}
+
+	resoudreNuit(joueurs: Joueur[], cibleDesLoups: string): Joueur[] {
+		const cible = joueurs.find((j) => j.pseudo === cibleDesLoups);
+		if (!cible || !cible.vivant) throw new Error(`${cibleDesLoups} ne peut pas être dévoré`);
+		if (cible.role === 'loup-garou') throw new Error('Les loups ne se dévorent pas entre eux');
+		return joueurs.map((j) => (j.pseudo === cibleDesLoups ? { ...j, vivant: false } : j));
+	}
+
+	compterVotes(votes: Vote[]): string | null {
+		const compte = new Map<string, number>();
+		for (const { cible } of votes) compte.set(cible, (compte.get(cible) ?? 0) + 1);
+		let maximum = 0;
+		let elimines: string[] = [];
+		for (const [cible, nombre] of compte) {
+			if (nombre > maximum) {
+				maximum = nombre;
+				elimines = [cible];
+			} else if (nombre === maximum) {
+				elimines.push(cible);
+			}
+		}
+		return elimines.length === 1 ? elimines[0] : null;
+	}
+
+	verifierVictoire(joueurs: Joueur[]): 'villageois' | 'loups' | null {
+		const vivants = joueurs.filter((j) => j.vivant);
+		const loups = vivants.filter((j) => j.role === 'loup-garou').length;
+		if (loups === 0) return 'villageois';
+		if (loups >= vivants.length - loups) return 'loups';
+		return null;
+	}
+}
+```
+
+Chaque méthode reçoit ses données en paramètres et **renvoie** son résultat : rien n'est lu ailleurs. La ligne surlignée mérite un arrêt : `distribuerRoles` mélange les rôles au hasard, et un test ne peut pas vérifier un résultat qui change à chaque appel. La fonction de tirage est donc un **paramètre**, avec `Math.random` par défaut. En production, on ne le passe pas ; dans un test, on en passe un dont on connaît la valeur.
+
+## Un premier test
+
+Un fichier de test se place à côté du code qu'il teste, avec le suffixe `.spec.ts`. Commence par la méthode la plus simple, `verifierVictoire` :
+
+```ts title="src/moteur/moteur.service.spec.ts"
+import { MoteurService, type Joueur } from './moteur.service.js';
+
+const joueur = (pseudo: string, role: Joueur['role'], vivant = true): Joueur => ({ pseudo, role, vivant });
+
+describe('MoteurService', () => {
+	const moteur = new MoteurService();
+
+	describe('verifierVictoire', () => {
+		it('donne la victoire aux villageois quand plus aucun loup n\'est vivant', () => {
+			const joueurs = [joueur('a', 'loup-garou', false), joueur('b', 'villageois')];
+			expect(moteur.verifierVictoire(joueurs)).toBe('villageois');
+		});
+
+		it('donne la victoire aux loups quand ils sont aussi nombreux que les autres', () => {
+			const joueurs = [joueur('a', 'loup-garou'), joueur('b', 'villageois')];
+			expect(moteur.verifierVictoire(joueurs)).toBe('loups');
+		});
+	});
+});
+```
+
+- `describe` regroupe des tests, `it` décrit **un comportement**, en une phrase qu'on lit comme une règle du jeu. Ce sont les phrases que tu verras dans le rapport quand un test échoue : soigne-les.
+- `expect(valeur)` suivi d'un **matcher** (`toBe`, `toEqual`, `toBeNull`…) compare le résultat à l'attendu.
+- Chaque test suit le même schéma, dans cet ordre : **préparer** les données, **appeler** le code, **vérifier** le résultat.
+- `describe`, `it` et `expect` n'ont pas besoin d'être importés : le projet généré les rend disponibles partout.
+- `new MoteurService()` suffit : ce service n'a aucune dépendance, il n'y a donc rien à faire construire par NestJS.
+
+Lance les tests :
+
+```bash
+npm test
+```
+
+```text
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+```
+
+Deux autres commandes te serviront tout le temps : `npm test -- moteur` ne lance que les fichiers dont le nom contient `moteur`, et `npm run test:watch` relance les tests à chaque fois que tu enregistres un fichier.
+
+:::note[Le test généré par la CLI]
+Un projet créé avec la CLI contient déjà un test, `src/app.controller.spec.ts`. Si tu as supprimé `app.controller.ts` en partie 3, supprime aussi son test : sinon `npm test` échoue avec `Cannot find module './app.controller.js'`.
+:::
+
+## Les cas limites
+
+Un test vaut surtout par les cas qu'il choisit. Pour le décompte des votes, il y a le cas normal, mais aussi les deux où personne n'est éliminé :
+
+```ts
+describe('compterVotes', () => {
+	it('élimine le joueur le plus voté', () => {
+		const votes = [
+			{ votant: 'a', cible: 'c' },
+			{ votant: 'b', cible: 'c' },
+			{ votant: 'c', cible: 'a' },
+		];
+		expect(moteur.compterVotes(votes)).toBe('c');
+	});
+
+	it('n\'élimine personne en cas d\'égalité', () => {
+		const votes = [
+			{ votant: 'a', cible: 'b' },
+			{ votant: 'b', cible: 'a' },
+		];
+		expect(moteur.compterVotes(votes)).toBeNull();
+	});
+
+	it('n\'élimine personne sans vote', () => {
+		expect(moteur.compterVotes([])).toBeNull();
+	});
+});
+```
+
+Quand plusieurs cas ne diffèrent que par leurs données, `it.each` évite de recopier le test. Chaque ligne du tableau devient un test ; `%s` insère la première valeur de la ligne dans le titre :
+
+```ts
+describe('verifierVictoire', () => {
+	it.each([
+		['plus aucun loup vivant', [joueur('a', 'loup-garou', false), joueur('b', 'villageois')], 'villageois'],
+		['autant de loups que de villageois', [joueur('a', 'loup-garou'), joueur('b', 'villageois')], 'loups'],
+		['loups minoritaires', [joueur('a', 'loup-garou'), joueur('b', 'villageois'), joueur('c', 'voyante')], null],
+	])('%s', (_cas, joueurs, attendu) => {
+		expect(moteur.verifierVictoire(joueurs as Joueur[])).toBe(attendu);
+	});
+});
+```
+
+## Les erreurs, et ce qu'on ne doit pas modifier
+
+Pour vérifier qu'un code **lève** une erreur, on enveloppe l'appel dans une fonction fléchée, et on donne au matcher `toThrow` un morceau du message attendu :
+
+```ts
+it('refuse de dévorer un loup', () => {
+	expect(() => moteur.resoudreNuit(joueurs, 'a')).toThrow('Les loups ne se dévorent pas entre eux');
+});
+```
+
+`resoudreNuit` est censée **renvoyer** une nouvelle liste, sans toucher à celle qu'elle a reçue. Cette promesse aussi se teste :
+
+```ts
+describe('resoudreNuit', () => {
+	const joueurs = [joueur('a', 'loup-garou'), joueur('b', 'villageois'), joueur('c', 'voyante')];
+
+	it('tue la cible des loups', () => {
+		const apres = moteur.resoudreNuit(joueurs, 'b');
+		expect(apres.find((j) => j.pseudo === 'b')?.vivant).toBe(false);
+		expect(apres.find((j) => j.pseudo === 'c')?.vivant).toBe(true);
+	});
+
+	it('ne modifie pas la liste reçue', () => {
+		moteur.resoudreNuit(joueurs, 'b');
+		expect(joueurs.every((j) => j.vivant)).toBe(true);
+	});
+});
+```
+
+## Le hasard
+
+Pour la distribution, on ne vérifie pas **qui** reçoit quel rôle, puisque ça change à chaque fois : on vérifie ce qui est vrai **quel que soit le tirage**. Combien de loups, combien de voyantes, tous vivants, pseudos dans l'ordre. Et grâce au paramètre `aleatoire`, on peut aussi fixer le hasard :
+
+```ts
+describe('distribuerRoles', () => {
+	it('donne un loup pour 4 joueurs, et une voyante', () => {
+		const joueurs = moteur.distribuerRoles(['a', 'b', 'c', 'd']);
+		expect(joueurs.filter((j) => j.role === 'loup-garou')).toHaveLength(1);
+		expect(joueurs.filter((j) => j.role === 'voyante')).toHaveLength(1);
+		expect(joueurs.filter((j) => j.role === 'villageois')).toHaveLength(2);
+	});
+
+	it('refuse moins de 4 joueurs', () => {
+		expect(() => moteur.distribuerRoles(['a', 'b', 'c'])).toThrow('Il faut au moins 4 joueurs');
+	});
+
+	it('donne le même résultat avec le même tirage', () => {
+		const tirage = () => 0.3;
+		expect(moteur.distribuerRoles(['a', 'b', 'c', 'd'], tirage)).toEqual(
+			moteur.distribuerRoles(['a', 'b', 'c', 'd'], tirage),
+		);
+	});
+});
+```
+
+`toEqual` compare le **contenu** de deux objets ou tableaux ; `toBe`, lui, exige que ce soit la même valeur — pour deux tableaux distincts, il échouerait toujours. Le même principe vaut pour les nombres décimaux : `expect(0.1 + 0.2).toBe(0.3)` échoue avec `expected 0.30000000000000004 to be 0.3`, parce que les décimales ne se représentent pas exactement en machine. Pour comparer des décimales, on arrondit le calcul, ou on utilise `toBeCloseTo(0.3, 2)`, qui accepte un écart minuscule.
+
+## Un test qui n'a jamais échoué ne prouve rien
+
+Un test passe au vert quand le code est bon — mais aussi quand le test ne vérifie rien d'utile. Le seul moyen d'en être sûr : **casser le code exprès**. Dans `verifierVictoire`, remplace `>=` par `>` :
+
+```ts
+if (loups > vivants.length - loups) return 'loups';
+```
+
+Relance `npm test` :
+
+```text
+ FAIL  src/moteur/moteur.service.spec.ts > MoteurService > verifierVictoire > autant de loups que de villageois
+AssertionError: expected null to be 'loups' // Object.is equality
+
+- Expected:
+"loups"
+
++ Received:
+null
+```
+
+Le rapport nomme le test (voilà pourquoi ses phrases comptent), montre ce qui était attendu et ce qui est arrivé, et pointe la ligne du test qui a échoué. Un seul test sur quinze est tombé : c'est exactement celui qui protège cette règle. Remets le `>=`.
+
+<Exercices partie={6} de={1} a={5}>
+
+<Exercice numero="6.1" titre="Les paliers de prix">
+Tu écris le calcul du prix d'une commande : `PrixService.calculerTotal(prixUnitaire, quantite)`, plein tarif de 1 à 9 unités, 10 % de remise de 10 à 49, 20 % à partir de 50. Commence par le **test** : crée la méthode vide (`return 0`), écris les tests pour 1, 10 et 50 unités à 100 €, et vois-les échouer. Puis implémente la méthode jusqu'à ce qu'ils passent.
+</Exercice>
+
+<Exercice numero="6.2" titre="Les bornes, et casser le code exprès">
+Les erreurs se cachent aux frontières. Avec `it.each`, teste les quantités 1, 9, 10, 49, 50 et 100 (à 100 €, on attend 100, 900, 900, 4410, 4000 et 8000). Puis casse ton code exprès : change `>= 10` en `> 10`, et vérifie qu'au moins un test tombe. Remets le code en place.
+</Exercice>
+
+<Exercice numero="6.3" titre="L'arrondi au centime">
+À 0,70 € l'unité, douze unités donnent, en calcul brut, `7.559999999999999` : c'est le piège des décimales de cette section. Écris un test qui attend `7.56` avec `toBe`, vois-le échouer, puis arrondis le total au centime dans `calculerTotal` pour qu'il passe.
+</Exercice>
+
+<Exercice numero="6.4" titre="Les quantités invalides">
+Une quantité de 0, négative ou non entière n'a pas de sens : `calculerTotal` doit lever une erreur qui contient « entier positif ». Teste les valeurs 0, -3 et 2,5 avec `it.each` et `toThrow`, puis fais passer les tests.
+</Exercice>
+
+<Exercice numero="6.5" titre="Les transitions d'une commande">
+Une commande passe par les statuts `en_attente`, `payee`, `expediee`, `livree`, ou finit `annulee` (seulement depuis `en_attente` ou `payee`). Écris `transitionner(actuel, cible)`, qui renvoie le nouveau statut ou lève `Passage impossible : … vers …`. Teste au moins quatre passages autorisés et quatre refusés, avec `it.each`, en incluant `livree` vers `annulee` et `en_attente` vers `livree`.
+</Exercice>
+
+</Exercices>

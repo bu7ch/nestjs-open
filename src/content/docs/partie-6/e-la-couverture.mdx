@@ -1,0 +1,110 @@
+---
+title: "e · La couverture"
+description: "Mesurer quelles lignes de ton code les tests exécutent, et comprendre ce que ce chiffre ne dit pas."
+projet: loup-garou
+duree: 40
+prerequis: Sections a à d.
+exercices: 2
+sidebar:
+  order: 5
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Tu as écrit des tests. Comment savoir ce qu'ils **ne** testent pas ? La **couverture** (*coverage*) répond à cette question : elle observe quelles lignes de ton code s'exécutent pendant les tests, et signale celles qui ne s'exécutent jamais.
+
+```bash
+npm run test:cov
+```
+
+Après les tests, un tableau s'affiche (les chiffres seront différents chez toi) :
+
+```text
+-------------------|---------|----------|---------|---------|-------------------
+File               | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s 
+-------------------|---------|----------|---------|---------|-------------------
+All files          |   76.04 |    83.67 |   55.17 |   72.15 |                   
+ src/moteur        |   91.11 |       92 |   81.81 |   87.87 |                   
+  ...controller.ts |       0 |        0 |       0 |       0 | 5-11              
+  ...ur.service.ts |     100 |      100 |     100 |     100 |                   
+ src/villages      |   63.63 |    66.66 |    37.5 |      60 |                   
+  ...controller.ts |       0 |        0 |       0 |       0 | 6-22              
+  ...es.service.ts |    87.5 |      100 |      75 |   85.71 | 17-18             
+-------------------|---------|----------|---------|---------|-------------------
+```
+
+- **Stmts** (instructions), **Lines** (lignes) et **Funcs** (fonctions) : la part de chacune exécutée au moins une fois.
+- **Branch** (branches) : la part des chemins d'un `if`, d'un `? :` ou d'un `??` qui ont été empruntés. Un `if` dont la condition n'est jamais fausse n'a couvert qu'une branche sur deux.
+- **Uncovered Line #s** : les lignes que **aucun test n'a exécutées**. C'est la colonne utile : elle te dit où écrire le prochain test. Ici, `villages.service.ts` n'a jamais exécuté ses lignes 17 et 18, c'est-à-dire la méthode `creer`.
+
+Un rapport HTML, plus agréable à parcourir, est aussi écrit dans le dossier `coverage/` : ouvre `coverage/index.html`, et chaque fichier s'affiche avec ses lignes non exécutées en rouge. Ce dossier est produit par la machine, pas par toi : ajoute `coverage/` à ton `.gitignore` s'il n'y est pas déjà.
+
+## Premier piège : les fichiers oubliés
+
+Par défaut, la couverture ne compte que les fichiers que les tests **ont importés**. Un fichier qu'aucun test ne touche n'apparaît pas dans le tableau : ni en rouge, ni en vert. Sur notre projet, le rapport par défaut affichait environ 90 % ; en comptant enfin tous les fichiers, on tombait à environ 65 %. Pour éviter de se mentir, on dit à Vitest quels fichiers surveiller :
+
+```ts title="vitest.config.ts" {7-11}
+export default defineConfig({
+  plugins: [tsconfigPaths()],
+  test: {
+    globals: true,
+    root: './',
+    include: ['**/*.spec.ts'],
+    coverage: {
+      include: ['src/**/*.ts'],
+      exclude: ['src/main.ts', 'src/**/*.module.ts', 'src/**/*.dto.ts', 'src/**/*.entity.ts', 'src/data-source.ts'],
+      thresholds: { lines: 80 },
+    },
+  },
+});
+```
+
+`include` liste tout ce qui doit être mesuré, tests ou pas. `exclude` retire ce qui ne contient aucune logique à tester : le point d'entrée, les modules (de simples déclarations), les DTO et les entités (des classes décorées, sans comportement). Ce ne sont pas des fichiers « faciles » : ils sont vérifiés indirectement, par les tests de bout en bout.
+
+## Un seuil, pour ne pas reculer
+
+`thresholds: { lines: 80 }` fait échouer la commande quand moins de 80 % des lignes sont couvertes :
+
+```text
+ERROR: Coverage for lines (72.15%) does not meet global threshold (80%)
+```
+
+La commande se termine alors avec un code d'erreur, ce qui permettra à un outil d'intégration continue de refuser un changement qui ferait baisser la couverture (on y reviendra en partie 10). Le seuil est un **plancher**, pas un objectif : il empêche de reculer sans s'en rendre compte.
+
+Et les tests de bout en bout ? Leur couverture se mesure à part, avec leur propre configuration :
+
+```bash
+npx vitest run --config ./vitest.config.e2e.ts --coverage
+```
+
+C'est là que les contrôleurs, restés à 0 % dans le tableau ci-dessus, apparaissent couverts : les tests unitaires ne les appellent jamais, les tests de bout en bout les traversent tous.
+
+## Second piège : 100 % ne veut pas dire correct
+
+La couverture mesure ce qui **s'exécute**, jamais ce qui est **vérifié**. Voici un test qui appelle chaque méthode du moteur, dans tous les cas, sans un seul `expect` :
+
+```ts
+it('appelle tout', () => {
+	const moteur = new MoteurService();
+	moteur.verifierVictoire([joueur('a', 'loup-garou', false), joueur('b', 'villageois')]);
+	moteur.verifierVictoire([joueur('a', 'loup-garou'), joueur('b', 'villageois')]);
+	// … et ainsi de suite pour chaque méthode
+});
+```
+
+Il ne peut jamais échouer, sauf si le code plante. Casse maintenant la règle de victoire des loups (`>=` devenu `>`, comme en section a) : la suite reste **verte**, et le rapport annonce 100 % des lignes couvertes pour `moteur.service.ts`. Le bug est passé, avec un excellent score.
+
+C'est pourquoi les vrais tests de la section a, eux, tombent : ils **comparent** le résultat à une valeur attendue. Retiens la règle : la couverture sert à trouver le code que **personne ne teste** ; elle ne dit rien de la qualité des tests qui le touchent. Un seuil à 80 % qui pousse à écrire de mauvais tests pour l'atteindre est pire que pas de seuil du tout.
+
+<Exercices partie={6} de={15} a={16}>
+
+<Exercice numero="6.15" titre="Mesurer, puis compter tous les fichiers">
+Lance `npm run test:cov` sur ta marketplace et note le pourcentage de `All files`. Ajoute ensuite `coverage.include` (avec les `exclude` de la section) et relance : que devient le chiffre, et quels fichiers apparaissent maintenant à 0 % ? Choisis-en un, écris les tests qui manquent, et vérifie que ses lignes non couvertes disparaissent du tableau.
+</Exercice>
+
+<Exercice numero="6.16" titre="Un test qui ne protège rien">
+Écris un test de `calculerTotal` qui appelle la méthode dans tous ses cas, sans `expect`. Vérifie qu'il couvre 100 % des lignes. Casse ensuite la remise (0,2 devient 0,9) : le test paresseux reste vert. Relance ta vraie suite (exercices 6.1 à 6.4) : combien de tests tombent ? Remets le code, puis règle un seuil `lines: 80` et vérifie le message d'erreur en le passant temporairement à 100.
+</Exercice>
+
+</Exercices>

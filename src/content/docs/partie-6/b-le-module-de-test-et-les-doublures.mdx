@@ -1,0 +1,164 @@
+---
+title: "b · Le module de test et les doublures"
+description: "Tester un service qui dépend d'autres, en remplaçant ses dépendances par de faux objets."
+projet: loup-garou
+duree: 55
+prerequis: Section a (les tests unitaires).
+exercices: 3
+sidebar:
+  order: 2
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Le moteur de la section a n'avait aucune dépendance : `new MoteurService()` suffisait. Mais `VillagesService` (partie 5) en a trois : deux repositories et `UtilisateursService`. Pour le tester avec les vraies, il faudrait une base de données — ce qui n'est plus un test unitaire. On les remplace donc par des **doublures** : de faux objets, écrits pour le test, dont on contrôle chaque réponse.
+
+## `vi.fn()`, la fausse fonction
+
+`vi.fn()` fabrique une fonction qui ne fait rien, mais **se souvient** de la façon dont on l'a appelée, et à qui on peut dicter ce qu'elle renvoie :
+
+```ts
+const trouverUn = vi.fn();
+trouverUn.mockResolvedValue({ id: 1 }); // renvoie une promesse qui se résout avec cet objet
+trouverUn.mockReturnValue(42);          // renvoie directement cette valeur
+```
+
+Un faux repository n'est alors qu'un objet dont les méthodes sont des `vi.fn()` :
+
+```ts
+const villages = { findOne: vi.fn(), findOneBy: vi.fn(), create: vi.fn(), save: vi.fn() };
+```
+
+## Le module de test
+
+Pour construire `VillagesService` avec ces doublures, on utilise le module de test de NestJS. Il fonctionne comme un `@Module` : tu lui donnes des `providers`, il les construit et les injecte, comme dans l'application. La différence : pour chaque dépendance, tu peux dire « ne construis pas la vraie, utilise celle-ci ».
+
+```ts title="src/villages/villages.service.spec.ts" {11,12,13,16,20,21,22}
+import { NotFoundException } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { UtilisateursService } from '../utilisateurs/utilisateurs.service.js';
+import { Participation } from './participation.entity.js';
+import { Village } from './village.entity.js';
+import { VillagesService } from './villages.service.js';
+
+describe('VillagesService', () => {
+	let service: VillagesService;
+	const villages = { findOne: vi.fn(), findOneBy: vi.fn(), create: vi.fn(), save: vi.fn() };
+	const participations = { create: vi.fn(), save: vi.fn() };
+	const utilisateursService = { trouverUn: vi.fn() };
+
+	beforeEach(async () => {
+		vi.resetAllMocks();
+		const module = await Test.createTestingModule({
+			providers: [
+				VillagesService,
+				{ provide: getRepositoryToken(Village), useValue: villages },
+				{ provide: getRepositoryToken(Participation), useValue: participations },
+				{ provide: UtilisateursService, useValue: utilisateursService },
+			],
+		}).compile();
+		service = module.get(VillagesService);
+	});
+
+	// … les tests, ci-dessous
+});
+```
+
+- Les lignes 11 à 13 déclarent les doublures. Elles vivent **à l'extérieur** de `beforeEach`, pour que les tests puissent leur dicter des réponses.
+- `{ provide: X, useValue: doublure }` dit : « quand quelqu'un demande `X`, donne-lui `doublure` ». Pour un repository, le `X` est `getRepositoryToken(Village)` : c'est le jeton que `@InjectRepository(Village)` utilise en coulisses.
+- `module.get(VillagesService)` te rend le service, construit avec ces doublures.
+- `beforeEach` s'exécute avant **chaque** test, pour repartir d'un service neuf. Et `vi.resetAllMocks()` efface l'historique et les réponses de toutes les doublures : on y revient plus bas.
+
+## Les tests
+
+Chaque test dicte les réponses des doublures, appelle le service, puis vérifie deux choses : ce qu'il **renvoie**, et ce qu'il a **demandé** à ses dépendances.
+
+```ts
+describe('trouverUn', () => {
+	it('renvoie le village avec ses participations', async () => {
+		villages.findOne.mockResolvedValue({ id: 1, nom: 'Lune Rousse' });
+
+		await expect(service.trouverUn(1)).resolves.toEqual({ id: 1, nom: 'Lune Rousse' });
+		expect(villages.findOne).toHaveBeenCalledWith({
+			where: { id: 1 },
+			relations: { participations: { utilisateur: true } },
+		});
+	});
+
+	it('lève une NotFoundException si le village n\'existe pas', async () => {
+		villages.findOne.mockResolvedValue(null);
+		await expect(service.trouverUn(9)).rejects.toThrow(NotFoundException);
+	});
+});
+
+describe('rejoindre', () => {
+	it('enregistre la participation', async () => {
+		const village = { id: 1, nom: 'Lune Rousse' };
+		const utilisateur = { id: 2, pseudo: 'LouveGrise' };
+		villages.findOneBy.mockResolvedValue(village);
+		utilisateursService.trouverUn.mockResolvedValue(utilisateur);
+		participations.create.mockReturnValue({ village, utilisateur, role: 'voyante' });
+		participations.save.mockImplementation(async (p) => ({ id: 7, ...p }));
+
+		const resultat = await service.rejoindre(1, 2, 'voyante');
+
+		expect(participations.create).toHaveBeenCalledWith({ village, utilisateur, role: 'voyante' });
+		expect(resultat).toMatchObject({ id: 7, role: 'voyante' });
+	});
+
+	it('ne cherche pas l\'utilisateur si le village n\'existe pas', async () => {
+		villages.findOneBy.mockResolvedValue(null);
+
+		await expect(service.rejoindre(9, 2, 'voyante')).rejects.toThrow(NotFoundException);
+		expect(utilisateursService.trouverUn).not.toHaveBeenCalled();
+		expect(participations.save).not.toHaveBeenCalled();
+	});
+});
+```
+
+Quelques nouveautés :
+
+- Pour une méthode `async`, on écrit `await expect(promesse).resolves…` ou `.rejects…`. Sans le `await`, Vitest affiche un avertissement (`Promise returned by … was not awaited`) et rattrape l'oubli pour l'instant, mais il prévient que ça échouera à l'avenir ; d'autres outils laissent simplement passer le test, même si l'assertion est fausse.
+- `toHaveBeenCalledWith(...)` vérifie les arguments reçus par la doublure, `not.toHaveBeenCalled()` qu'elle n'a **pas** été appelée : le dernier test prouve que le service s'arrête au village inconnu, sans rien écrire.
+- `mockImplementation(fn)` donne à la doublure un vrai comportement, ici : renvoyer ce qu'on lui passe, avec un `id` en plus.
+- `toMatchObject` vérifie qu'un objet **contient** ces propriétés, sans exiger qu'il n'ait rien d'autre.
+
+## Quand ça casse
+
+**Une dépendance oubliée.** Retire la ligne `{ provide: UtilisateursService, … }` du module de test, et tous les tests tombent :
+
+```text
+Error: Nest can't resolve dependencies of the VillagesService (VillageRepository, ParticipationRepository, ?). Please make sure that the argument UtilisateursService at index [2] is available in the RootTestModule module.
+```
+
+C'est le même message qu'au démarrage de l'application quand un `exports` manque (partie 3, exercice 3.12) : le `?` marque la dépendance introuvable. Le module de test se comporte comme un vrai module.
+
+**Des doublures qui gardent la mémoire.** Retire maintenant `vi.resetAllMocks()`. Les doublures étant déclarées hors de `beforeEach`, elles gardent l'historique des tests précédents, et un test qui n'a rien fait de mal tombe :
+
+```text
+AssertionError: expected "vi.fn()" to not be called at all, but actually been called 1 times
+```
+
+Il s'agit du dernier test : `utilisateursService.trouverUn` a bien été appelé une fois… par le test **précédent**. C'est le défaut le plus vicieux des tests : ils dépendent de l'ordre dans lequel ils s'exécutent. Un test doit réussir seul, dans n'importe quel ordre — d'où la remise à zéro systématique.
+
+## Ce que les doublures ne prouvent pas
+
+Ces tests vérifient la **logique** du service : le village inconnu donne un `404`, la participation reçoit les bons éléments. Ils ne vérifient pas que `findOne({ relations: … })` renvoie vraiment ce qu'on croit avec une vraie base : la doublure répond ce que tu lui dis de répondre. Un test qui ne parle qu'à des doublures peut passer alors que l'application est cassée. C'est pourquoi on ajoute, dans les sections suivantes, des tests qui utilisent le vrai HTTP puis la vraie base.
+
+<Exercices partie={6} de={6} a={8}>
+
+<Exercice numero="6.6" titre="Tester ProduitsService avec de fausses dépendances">
+`ProduitsService` refuse de créer un produit quand `NOMBRE_MAX_PRODUITS` est atteint (exercice 5.8). Teste-le sans base : un faux repository (`count`, `create`, `save`) et un faux `ConfigService` (`{ get: vi.fn() }`, fourni avec `{ provide: ConfigService, useValue: … }`). Trois cas : sous la limite le produit est enregistré, à la limite une `BadRequestException` est levée et `save` n'est pas appelé, et sans limite configurée `count` n'est jamais appelé.
+</Exercice>
+
+<Exercice numero="6.7" titre="Oublier une dépendance, exprès">
+Retire le faux `ConfigService` du module de test de l'exercice précédent, lance les tests et note le message d'erreur exact : quelle dépendance est marquée d'un `?`, et à quel indice ? Remets-le.
+</Exercice>
+
+<Exercice numero="6.8" titre="Des tests qui se marchent dessus">
+Retire `vi.resetAllMocks()` de ton `beforeEach`. Un test tombe alors que son code est correct : note lequel, et explique en une phrase pourquoi c'est un autre test qui l'a fait échouer. Remets la ligne.
+</Exercice>
+
+</Exercices>

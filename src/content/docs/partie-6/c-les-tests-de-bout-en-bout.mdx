@@ -1,0 +1,173 @@
+---
+title: "c · Les tests de bout en bout"
+description: "Envoyer de vraies requêtes HTTP à l'application dans un test, avec Supertest."
+projet: loup-garou
+duree: 50
+prerequis: Section b (le module de test et les doublures).
+exercices: 3
+sidebar:
+  order: 3
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Les tests unitaires vérifient chaque pièce isolément. Mais une API, c'est aussi le **routage**, les **pipes de validation**, les **codes de statut** et la sérialisation JSON, et rien de tout ça n'est testé tant qu'aucune requête HTTP n'a traversé l'application. Un test **de bout en bout** (*end-to-end*, ou *e2e*) démarre l'application pour de vrai, avec ses vrais modules, et lui envoie des requêtes : de la requête à la réponse, sans doublure.
+
+**Supertest** sert à ça : il envoie une requête à ton application et te rend la réponse, sans qu'il soit nécessaire de la démarrer sur un port. Il est déjà installé dans un projet généré.
+
+Pour l'essayer, le moteur du Loup-Garou reçoit une route qui distribue les rôles :
+
+```ts title="src/moteur/distribuer-roles.dto.ts"
+import { ArrayMinSize, IsArray, IsString } from 'class-validator';
+
+export class DistribuerRolesDto {
+	@IsArray()
+	@ArrayMinSize(4)
+	@IsString({ each: true })
+	pseudos: string[];
+}
+```
+
+```ts title="src/moteur/moteur.controller.ts"
+import { Body, Controller, Post } from '@nestjs/common';
+import { DistribuerRolesDto } from './distribuer-roles.dto.js';
+import { MoteurService } from './moteur.service.js';
+
+@Controller('api/moteur')
+export class MoteurController {
+	constructor(private readonly moteur: MoteurService) {}
+
+	@Post('distribution')
+	distribuer(@Body() dto: DistribuerRolesDto) {
+		return this.moteur.distribuerRoles(dto.pseudos);
+	}
+}
+```
+
+`@ArrayMinSize(4)` est un décorateur de `class-validator` que tu n'avais pas encore croisé : il exige au moins quatre éléments dans le tableau, comme la règle du moteur. Le module (`MoteurModule`) déclare le contrôleur et le service, comme d'habitude.
+
+## Le premier test de bout en bout
+
+Les tests e2e vivent dans le dossier `test/`, avec le suffixe `.e2e-spec.ts`, et se lancent avec leur propre commande :
+
+```bash
+npm run test:e2e
+```
+
+Le projet généré contient en effet **deux** configurations de Vitest : l'une pour `*.spec.ts` (`npm test`), l'autre pour `*.e2e-spec.ts` (`npm run test:e2e`). Les tests de bout en bout sont plus lents, on les lance donc à part.
+
+```ts title="test/moteur.e2e-spec.ts" {11,12,13,14,22,23,24,25}
+import { INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import request from 'supertest';
+import { configurerApp } from '../src/configurer-app.js';
+import { MoteurModule } from '../src/moteur/moteur.module.js';
+
+describe('Moteur (e2e)', () => {
+	let app: INestApplication;
+
+	beforeAll(async () => {
+		const module = await Test.createTestingModule({ imports: [MoteurModule] }).compile();
+		app = module.createNestApplication();
+		configurerApp(app);
+		await app.init();
+	});
+
+	afterAll(async () => {
+		await app.close();
+	});
+
+	it('POST /api/moteur/distribution distribue les rôles', async () => {
+		const reponse = await request(app.getHttpServer())
+			.post('/api/moteur/distribution')
+			.send({ pseudos: ['a', 'b', 'c', 'd'] })
+			.expect(201);
+
+		expect(reponse.body).toHaveLength(4);
+		expect(reponse.body.filter((j: { role: string }) => j.role === 'loup-garou')).toHaveLength(1);
+	});
+});
+```
+
+- Les lignes 11 à 14 construisent une **vraie application** NestJS, avec `MoteurModule` (pas de doublures, cette fois). C'est `AppModule` qu'on importerait pour tester toute l'application ; ici un seul module suffit, et le test démarre plus vite. `afterAll` ferme l'application, pour que le test se termine proprement.
+- On crée l'application une seule fois pour le fichier (`beforeAll`), alors que le projet généré la recrée pour chaque test (`beforeEach`). C'est plus rapide, et sans danger tant que les tests ne modifient pas l'état de l'application.
+- Les lignes 22 à 25 sont une requête Supertest : `.post(url)`, `.send(corps)`, puis `.expect(201)` qui vérifie le **code de statut** (un `POST` répond `201` par défaut avec NestJS). La réponse arrive dans `reponse.body`, déjà décodée du JSON.
+
+## Les erreurs se testent aussi
+
+Une API se juge autant sur ses refus que sur ses réponses. Ajoute-en deux :
+
+```ts
+it('refuse moins de 4 joueurs avec un 400', async () => {
+	const reponse = await request(app.getHttpServer())
+		.post('/api/moteur/distribution')
+		.send({ pseudos: ['a', 'b'] })
+		.expect(400);
+
+	expect(reponse.body.message).toContain('pseudos must contain at least 4 elements');
+});
+
+it('refuse un champ en trop', async () => {
+	const reponse = await request(app.getHttpServer())
+		.post('/api/moteur/distribution')
+		.send({ pseudos: ['a', 'b', 'c', 'd'], triche: true })
+		.expect(400);
+
+	expect(reponse.body.message).toContain('property triche should not exist');
+});
+```
+
+## Le piège : `main.ts` ne s'exécute pas
+
+Le test appelle `configurerApp(app)`, une fonction qu'on écrit juste en dessous, et qui existe à cause d'un piège. Dans `main.ts`, tu as ajouté `app.useGlobalPipes(new ValidationPipe(...))` (partie 4). Or un test crée **sa propre application**, sans jamais passer par `main.ts` : le `ValidationPipe` n'y existe pas. Retire l'appel à `configurerApp(app)` du test, et les deux derniers tests échouent :
+
+```text
+Error: expected 400 "Bad Request", got 500 "Internal Server Error"
+Error: expected 400 "Bad Request", got 201 "Created"
+```
+
+Sans validation, le corps trop court atteint le moteur, qui lève sa propre erreur (un `500`), et le champ en trop passe sans rien dire. Le test ne teste plus ton application telle qu'elle tourne en production, et il te ment.
+
+La parade : réunir toute la configuration de l'application dans **une fonction**, appelée aussi bien par `main.ts` que par les tests.
+
+```ts title="src/configurer-app.ts"
+import { INestApplication, ValidationPipe } from '@nestjs/common';
+
+export function configurerApp(app: INestApplication) {
+	app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }));
+}
+```
+
+```ts title="src/main.ts" {4,8}
+import { NestFactory } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
+import { AppModule } from './app.module.js';
+import { configurerApp } from './configurer-app.js';
+
+async function bootstrap() {
+	const app = await NestFactory.create(AppModule);
+	configurerApp(app);
+	const config = app.get(ConfigService);
+	await app.listen(config.get('PORT') ?? 3000);
+}
+await bootstrap();
+```
+
+Désormais, tout ce que tu ajoutes à l'application (un filtre d'exceptions, un préfixe global…) va dans `configurerApp`, et les tests le voient automatiquement.
+
+<Exercices partie={6} de={9} a={11}>
+
+<Exercice numero="6.9" titre="Une route pour les prix">
+Ajoute `POST /api/prix/total`, qui reçoit `{ "prixUnitaire": 100, "quantite": 10 }` et renvoie `{ "total": 900 }`, en s'appuyant sur `PrixService` (section a). Le DTO valide `prixUnitaire` (nombre, au moins 0) et `quantite` (entier, au moins 1). Écris le test e2e avec Supertest : le cas normal, une quantité de 0 refusée avec un `400`, un champ en trop refusé.
+</Exercice>
+
+<Exercice numero="6.10" titre="Tester sans les pipes, exprès">
+Retire `configurerApp(app)` de ton test (ou, si tu n'as pas encore extrait la fonction, n'active pas le `ValidationPipe` dans le test). Note les codes de statut obtenus à la place des `400` attendus, et explique en une phrase pourquoi. Remets la configuration.
+</Exercice>
+
+<Exercice numero="6.11" titre="Une seule configuration pour l'appli et les tests">
+Extrais `configurerApp` dans `src/configurer-app.ts`, appelle-la depuis `main.ts` **et** depuis ton test. Vérifie avec `curl` que le serveur lancé refuse toujours une quantité de 0, puis que `npm run test:e2e` passe. Ajoute enfin un préfixe global `app.setGlobalPrefix('v1')` dans `configurerApp` : les tests échouent avec des `404` : que doivent devenir les URLs de ton test, et pourquoi n'as-tu rien à changer dans `main.ts` ?
+</Exercice>
+
+</Exercices>
