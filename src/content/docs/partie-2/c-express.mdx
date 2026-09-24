@@ -1,0 +1,98 @@
+---
+title: "c · Express, un vrai framework"
+description: "Le même serveur, avec Express : routage, paramètres, corps JSON."
+duree: 45
+prerequis: Section b (npm et package.json).
+exercices: 4
+sidebar:
+  order: 3
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+**Express** est un framework HTTP minimaliste : il ne fait rien que le module `http` ne pouvait déjà faire, mais il te débarrasse du routage à la main, du parsing d'URL et de la lecture du corps morceau par morceau.
+
+```bash
+npm install express
+```
+
+```js title="serveur.js"
+import express from 'express';
+
+const app = express();
+const villages = [
+	{ id: '1', nom: 'Lune Rousse' },
+	{ id: '2', nom: 'Bois-Dormant' },
+];
+
+app.get('/api/villages', (req, res) => {
+	res.json(villages);
+});
+
+app.listen(3000, () => {
+	console.log('Serveur démarré sur http://localhost:3000');
+});
+```
+
+Compare à la section a : plus de `req.method === 'GET' && req.url === '...'`, plus de `JSON.stringify` ni d'en-tête à poser à la main — `app.get(chemin, gestionnaire)` et `res.json(valeur)` font tout ça.
+
+## Des paramètres dans l'URL
+
+Un segment précédé de `:` dans le chemin devient accessible dans `req.params` :
+
+```js
+app.get('/api/villages/:id', (req, res) => {
+	const village = villages.find((v) => v.id === req.params.id);
+	if (!village) {
+		res.status(404).json({ message: 'Village introuvable' });
+		return;
+	}
+	res.json(village);
+});
+```
+
+La chaîne de requête (`?tri=nom`), elle, arrive dans `req.query` :
+
+```js
+app.get('/api/villages', (req, res) => {
+	const resultat = req.query.tri === 'nom' ? [...villages].sort((a, b) => a.nom.localeCompare(b.nom)) : villages;
+	res.json(resultat);
+});
+```
+
+## Lire le corps d'une requête
+
+Par défaut, Express ne lit pas le corps des requêtes — il faut le lui demander, avec le middleware `express.json()` (les middlewares font l'objet de la section d).
+
+```js
+app.use(express.json());
+
+app.post('/api/villages', (req, res) => {
+	const village = req.body; // déjà un objet JavaScript, déjà parsé
+	villages.push(village);
+	res.status(201).json(village);
+});
+```
+
+Sans `express.json()`, `req.body` vaudrait `undefined` : plus besoin d'accumuler les morceaux de la requête toi-même comme en section a, mais il faut activer ce comportement explicitement.
+
+<Exercices partie={2} de={8} a={11}>
+
+<Exercice numero="2.8" titre="Un serveur Express minimal">
+Installe Express dans le projet de la section b. Écris `GET /api/villages`, qui renvoie le tableau en JSON avec `res.json()`.
+</Exercice>
+
+<Exercice numero="2.9" titre="Une route avec paramètre">
+Ajoute `GET /api/villages/:id`. Si aucun village ne correspond, réponds `404` avec `res.status(404).json({ message: 'Village introuvable' })`.
+</Exercice>
+
+<Exercice numero="2.10" titre="Créer un village">
+Ajoute `app.use(express.json())`, puis `POST /api/villages` : ajoute `req.body` au tableau en mémoire, et renvoie-le avec un statut `201`.
+</Exercice>
+
+<Exercice numero="2.11" titre="Filtrer par nom">
+Ajoute le support de `GET /api/villages?nom=Lune` sur la route existante : si `nom` est fourni dans `req.query`, ne renvoie que les villages dont le nom le contient (insensible à la casse).
+</Exercice>
+
+</Exercices>

@@ -1,0 +1,73 @@
+---
+title: "d · Les middlewares"
+description: "app.use, l'ordre d'exécution, et la brique qu'Express partage avec NestJS."
+duree: 35
+prerequis: Section c (Express).
+exercices: 3
+sidebar:
+  order: 4
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Tu as déjà utilisé un middleware sans le nommer : `express.json()`, en section c. Un **middleware** est une fonction `(req, res, next)` placée entre la requête et ta route : elle peut lire ou modifier `req`, répondre directement, ou passer la main à la suite avec `next()`.
+
+```js
+function journal(req, res, next) {
+	console.log(`${req.method} ${req.url}`);
+	next();
+}
+
+app.use(journal);
+```
+
+`app.use(middleware)` l'applique à **toutes** les requêtes, dans l'ordre où tu l'ajoutes — place `journal` avant tes routes, sinon les requêtes traitées avant lui ne seront jamais journalisées. Un middleware qui oublie d'appeler `next()` (et de répondre) laisse la requête bloquée indéfiniment.
+
+## Un middleware sur une seule route
+
+Passé en deuxième argument d'une route, un middleware ne s'applique qu'à elle :
+
+```js
+function exigerPseudo(req, res, next) {
+	if (!req.headers['x-pseudo']) {
+		res.status(400).json({ message: "En-tête x-pseudo manquant" });
+		return;
+	}
+	next();
+}
+
+app.post('/api/villages', exigerPseudo, (req, res) => {
+	// req.headers['x-pseudo'] existe forcément ici
+});
+```
+
+## Une route qui n'existe pas
+
+Un dernier `app.use`, placé après toutes tes routes, rattrape tout ce qui n'a matché aucune d'elles :
+
+```js
+app.use((req, res) => {
+	res.status(404).json({ message: 'Route inconnue' });
+});
+```
+
+Il doit être en dernier : Express essaie chaque route et chaque middleware **dans l'ordre d'écriture**, et s'arrête au premier qui répond.
+
+Tu retrouveras ce principe en partie 8, sous d'autres noms : les *guards*, *interceptors* et *pipes* de NestJS sont, eux aussi, du code qui s'intercale entre la requête et ta route — en plus structuré, et déclaré avec des décorateurs plutôt qu'avec `app.use`.
+
+<Exercices partie={2} de={12} a={14}>
+
+<Exercice numero="2.12" titre="Un middleware de journalisation">
+Écris un middleware `journal` qui affiche la méthode et l'URL de chaque requête, et applique-le à toute l'application avec `app.use`. Vérifie qu'il s'affiche bien pour toutes tes routes de la section c.
+</Exercice>
+
+<Exercice numero="2.13" titre="Un middleware sur une seule route">
+Écris `exigerPseudo` (ci-dessus) et applique-le uniquement à `POST /api/villages`. Vérifie avec deux requêtes `curl` : une sans l'en-tête `x-pseudo` (qui doit échouer avec `400`), une avec (qui doit réussir).
+</Exercice>
+
+<Exercice numero="2.14" titre="Route non trouvée">
+Ajoute, en tout dernier, un middleware qui répond `404` avec `{ "message": "Route inconnue" }` pour toute requête qui n'a matché aucune route. Vérifie qu'une route déjà définie n'est pas affectée, et qu'une route inventée l'est.
+</Exercice>
+
+</Exercices>

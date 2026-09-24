@@ -1,0 +1,90 @@
+---
+title: "b · npm et package.json"
+description: "Transformer un dossier de scripts en vrai projet : package.json, dépendances, scripts npm."
+duree: 30
+prerequis: Section a (le module http).
+exercices: 3
+sidebar:
+  order: 2
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Jusqu'ici, tu as lancé des fichiers isolés avec `node fichier.js`. Un vrai projet a besoin d'un **`package.json`** : il décrit le projet, ses dépendances, et comment le lancer.
+
+## Créer un package.json
+
+```bash
+npm init -y
+```
+
+Ça crée un `package.json` avec des valeurs par défaut. Ajoute `"type": "module"` dedans, pour pouvoir écrire `import`/`export` dans de simples fichiers `.js` — sans ça, il aurait fallu l'extension `.mjs`, comme en partie 1.
+
+```json title="package.json" {2}
+{
+  "name": "mon-projet",
+  "type": "module",
+  "version": "1.0.0"
+}
+```
+
+## Dépendances
+
+`npm install <paquet>` télécharge une librairie dans `node_modules/` et l'ajoute au `package.json`, dans `dependencies` — le code dont ton application a besoin pour tourner.
+
+```bash
+npm install express
+```
+
+```json title="package.json"
+{
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
+```
+
+Le `^` autorise npm à installer une version plus récente **tant que le premier chiffre ne change pas** (ici, `4.x.x`, jamais `5.0.0`) : ce premier chiffre augmente quand une librairie change quelque chose qui casse la compatibilité. Avec `npm install --save-dev <paquet>`, la dépendance va dans `devDependencies` à la place : ce que tu utilises seulement pendant le développement (comme `typescript`, en partie 1), jamais une fois le code exécuté.
+
+`node_modules/` ne se commite pas — un `.gitignore` l'exclut. `package-lock.json`, lui, se commite : il fixe la version exacte de chaque dépendance (et de leurs propres dépendances), pour qu'une autre personne qui installe ton projet obtienne exactement les mêmes versions que toi.
+
+## Les scripts npm
+
+La section `scripts` du `package.json` nomme des commandes à lancer avec `npm run <nom>` :
+
+```json title="package.json"
+{
+  "scripts": {
+    "start": "node serveur.js"
+  }
+}
+```
+
+`npm start` est un raccourci pour `npm run start` — le seul script à avoir ce raccourci. Pour développer, `node --watch` (intégré à Node, rien à installer) relance le serveur à chaque modification d'un fichier :
+
+```json title="package.json"
+{
+  "scripts": {
+    "start": "node serveur.js",
+    "dev": "node --watch serveur.js"
+  }
+}
+```
+
+<Exercices partie={2} de={5} a={7}>
+
+<Exercice numero="2.5" titre="Initialiser un projet">
+Crée un dossier, lance `npm init -y`, ajoute `"type": "module"`. Déplace ton `serveur.js` de la section a dedans (renomme-le `serveur.js`, sans le `m`, maintenant que `"type": "module"` s'en charge). Ajoute un script `"start": "node serveur.js"`, puis lance-le avec `npm start`.
+</Exercice>
+
+<Exercice numero="2.6" titre="Lire des numéros de version">
+Un `package.json` contient ces trois dépendances : `"express": "^4.18.2"`, `"chalk": "~5.3.0"`, `"dotenv": "16.4.5"`. Pour chacune, réponds : `npm install` peut-il installer la version suivante à sa place ?
+`express` en `4.19.0` ? `express` en `5.0.0` ? `chalk` en `5.3.5` ? `chalk` en `5.4.0` ? `dotenv` en `16.4.6` ? (Indice : `~` n'autorise que les correctifs, le dernier chiffre ; une version sans `^` ni `~` n'autorise que celle-là, exactement.)
+</Exercice>
+
+<Exercice numero="2.7" titre="Un script de développement">
+Reprends le projet de l'exercice 2.5. Ajoute un script `"dev": "node --watch serveur.js"`. Lance `npm run dev`, modifie le message renvoyé par le serveur pendant qu'il tourne, enregistre, et vérifie qu'il redémarre tout seul.
+</Exercice>
+
+</Exercices>

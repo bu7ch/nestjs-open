@@ -1,0 +1,123 @@
+---
+title: "a · Le module http natif"
+description: "Un serveur HTTP sans aucune dépendance, avec le module http de Node."
+duree: 40
+prerequis: "Partie 1 terminée : JavaScript moderne, asynchrone et TypeScript de base."
+exercices: 4
+sidebar:
+  order: 1
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Node.js embarque un module `http`, sans rien à installer, capable de faire tourner un serveur. C'est bas niveau — tu vas voir pourquoi personne ne s'arrête là — mais comprendre cette couche aide à comprendre tout ce qui est construit dessus, Express et NestJS compris.
+
+## Un premier serveur
+
+```js title="serveur.mjs"
+import { createServer } from 'node:http';
+
+const serveur = createServer((req, res) => {
+	res.writeHead(200, { 'Content-Type': 'text/plain' });
+	res.end('Bonjour, NestJS Open !');
+});
+
+serveur.listen(3000, () => {
+	console.log('Serveur démarré sur http://localhost:3000');
+});
+```
+
+`createServer` prend une fonction appelée à **chaque requête**, avec deux objets : `req` (la requête) et `res` (la réponse, à construire toi-même). `res.writeHead(statut, en-têtes)` fixe le code de statut et les en-têtes, `res.end(corps)` envoie la réponse et termine l'échange. Lance ce fichier avec `node serveur.mjs`, puis visite `http://localhost:3000` dans ton navigateur, ou dans un autre terminal :
+
+```bash
+curl http://localhost:3000
+```
+
+## Router à la main
+
+Rien n'aiguille automatiquement une requête vers le bon code : c'est à toi de lire `req.method` et `req.url`.
+
+```js title="serveur.mjs" {6-10,12-15}
+import { createServer } from 'node:http';
+
+const villages = [
+	{ id: '1', nom: 'Lune Rousse' },
+	{ id: '2', nom: 'Bois-Dormant' },
+];
+
+const serveur = createServer((req, res) => {
+	if (req.method === 'GET' && req.url === '/api/villages') {
+		res.writeHead(200, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify(villages));
+		return;
+	}
+
+	res.writeHead(404, { 'Content-Type': 'application/json' });
+	res.end(JSON.stringify({ message: 'Route inconnue' }));
+});
+
+serveur.listen(3000);
+```
+
+Imagine ce `if` répété pour dix routes : c'est illisible, et facile à casser en ajoutant une onzième. Garde cette douleur en tête pour la section c.
+
+## Lire l'URL
+
+`req.url` est une simple chaîne (`/api/villages/1?tri=nom`), pas déjà découpée. La classe native `URL` t'aide à en extraire les morceaux :
+
+```js
+const url = new URL(req.url, 'http://localhost');
+url.pathname; // '/api/villages/1'
+url.searchParams.get('tri'); // 'nom'
+```
+
+Pour un identifiant dans le chemin (`/api/villages/1`), il faut le découper toi-même — Express fera ça pour toi en section c :
+
+```js
+const segments = url.pathname.split('/'); // ['', 'api', 'villages', '1']
+const id = segments.at(-1); // '1'
+```
+
+## Lire le corps d'une requête
+
+Contrairement à `req.url`, le **corps** d'une requête POST n'arrive pas d'un coup : il arrive par morceaux (des `Buffer`), en flux. Il faut les accumuler avant de pouvoir les lire.
+
+```js
+function lireCorps(req) {
+	return new Promise((resolve, reject) => {
+		let donnees = '';
+		req.on('data', (morceau) => (donnees += morceau));
+		req.on('end', () => resolve(donnees));
+		req.on('error', reject);
+	});
+}
+```
+
+`lireCorps` renvoie une promesse : tu peux l'utiliser avec `await`, puis passer la chaîne obtenue à `JSON.parse`.
+
+<Exercices partie={2} de={1} a={4}>
+
+<Exercice numero="2.1" titre="Un serveur minimal">
+Écris `serveur.mjs` : un serveur qui répond `Bonjour !` en texte brut, sur n'importe quelle URL. Lance-le, puis vérifie avec `curl http://localhost:3000`.
+</Exercice>
+
+<Exercice numero="2.2" titre="Router deux routes">
+Ajoute une route `GET /api/villages` qui renvoie un tableau de villages en JSON (au moins `id` et `nom`). Toute autre requête doit renvoyer un statut `404` avec `{ "message": "Route inconnue" }`, également en JSON.
+</Exercice>
+
+<Exercice numero="2.3" titre="Un village précis, et un filtre">
+Ajoute `GET /api/villages/:id` (extrait `id` de `req.url`) : renvoie le village correspondant, ou `404` si aucun ne correspond. Ajoute aussi le support de `?tri=nom` sur `GET /api/villages`, qui trie le tableau renvoyé par ordre alphabétique du nom.
+</Exercice>
+
+<Exercice numero="2.4" titre="Créer un village">
+Ajoute `POST /api/villages` : lis le corps de la requête avec `lireCorps` (ci-dessus), parse-le en JSON, ajoute le nouveau village au tableau en mémoire, et renvoie-le avec un statut `201`. Vérifie avec :
+
+```bash
+curl -X POST http://localhost:3000/api/villages \
+	-H "Content-Type: application/json" \
+	-d '{"id":"3","nom":"Clairval"}'
+```
+</Exercice>
+
+</Exercices>
