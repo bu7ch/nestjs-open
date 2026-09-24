@@ -1,0 +1,58 @@
+---
+title: "b · Le terminal, ton nouvel outil"
+description: Se déplacer et agir dans les dossiers en ligne de commande.
+duree: 20
+prerequis: Section a (comment fonctionne le web).
+exercices: 2
+sidebar:
+  order: 2
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Jusqu'ici, tu as sans doute utilisé ton ordinateur avec la souris : des fenêtres, des dossiers, des doubles clics. Le **terminal** fait la même chose en tapant des commandes. C'est plus lent au début, mais c'est l'outil que tout développeur backend utilise : lancer un serveur, installer une librairie ou déployer, tout ça passe par le terminal.
+
+Ouvre un terminal (l'app Terminal sur macOS, ou l'invite de commandes / WSL sur Windows). Il affiche une **invite** (prompt), avec le dossier où tu te trouves.
+
+```bash
+pwd
+```
+
+`pwd` (*print working directory*) affiche le dossier courant. Pour voir ce qu'il contient :
+
+```bash
+ls
+```
+
+Pour se déplacer dans un dossier :
+
+```bash
+cd nom-du-dossier
+```
+
+Et pour remonter d'un niveau :
+
+```bash
+cd ..
+```
+
+Enfin, pour créer un dossier :
+
+```bash
+mkdir mon-dossier
+```
+
+Ces cinq commandes suffisent pour l'instant. Tu en apprendras d'autres au fil du cours, en les utilisant.
+
+<Exercices partie={0} de={3} a={4} test={false}>
+
+<Exercice numero="0.3" titre="Se déplacer">
+Ouvre un terminal. Utilise `pwd` pour voir où tu es, puis `cd` pour rejoindre ton dossier personnel (`cd ~` fonctionne partout), et enfin `ls` pour voir ce qu'il contient.
+</Exercice>
+
+<Exercice numero="0.4" titre="Créer une arborescence">
+Crée un dossier `nestjs-open`, puis un dossier `partie-0` à l'intérieur. Indice : `mkdir -p nestjs-open/partie-0` fait les deux en une seule commande.
+</Exercice>
+
+</Exercices>

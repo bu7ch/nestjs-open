@@ -1,0 +1,45 @@
+---
+title: "c · Installer Git et VS Code"
+description: Suivre les changements de ton code avec Git, et l'éditer avec VS Code.
+duree: 30
+prerequis: Section b (le terminal).
+exercices: 2
+sidebar:
+  order: 3
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Deux outils que tu vas utiliser à chaque partie du cours.
+
+## Git
+
+**Git** garde l'historique de ton code : chaque **commit** est une photo de ton projet à un instant donné, que tu peux toujours retrouver. Installe-le depuis [git-scm.com](https://git-scm.com), puis vérifie :
+
+```bash
+git --version
+```
+
+Git a besoin de savoir qui tu es, pour signer tes commits :
+
+```bash
+git config --global user.name "Ton nom"
+git config --global user.email "ton@email.com"
+```
+
+## VS Code
+
+**VS Code** est un éditeur de code gratuit, avec un terminal intégré et une bonne prise en charge de TypeScript — ce qui compte pour ce cours. Installe-le depuis [code.visualstudio.com](https://code.visualstudio.com/).
+
+<Exercices partie={0} de={5} a={6} test={false}>
+
+<Exercice numero="0.5" titre="Configurer Git">
+Installe Git, puis renseigne ton nom et ton e-mail avec `git config --global`. Vérifie avec `git config --global user.name`.
+</Exercice>
+
+<Exercice numero="0.6" titre="Premier commit">
+Dans le dossier `nestjs-open` créé à l'exercice précédent, lance `git init`. Crée un fichier `notes.md` avec une ligne de texte, puis fais ton premier commit avec `git add notes.md` et `git commit -m "Premier commit"`.
+</Exercice>
+
+</Exercices>

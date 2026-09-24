@@ -1,0 +1,39 @@
+---
+title: "d · Installer Node.js"
+description: Installer Node.js et exécuter ton premier script JavaScript.
+duree: 25
+prerequis: Section c (Git et VS Code).
+exercices: 2
+sidebar:
+  order: 4
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+**Node.js** exécute du JavaScript en dehors d'un navigateur — c'est lui qui fera tourner ton serveur NestJS. Installe la version **LTS** (*Long Term Support*, la plus stable) depuis [nodejs.org](https://nodejs.org/), puis vérifie :
+
+```bash
+node --version
+npm --version
+```
+
+`npm` (*Node Package Manager*) est installé avec Node. Il télécharge les librairies dont ton projet a besoin — NestJS en fait partie.
+
+Node exécute un fichier `.js` directement :
+
+```bash
+node mon-script.js
+```
+
+<Exercices partie={0} de={7} a={8} test={false}>
+
+<Exercice numero="0.7" titre="Vérifier l'installation">
+Installe la version LTS de Node.js, puis vérifie les versions de `node` et de `npm` avec l'option `--version`.
+</Exercice>
+
+<Exercice numero="0.8" titre="Ton premier script">
+Crée un fichier `bonjour.js` qui affiche `console.log("Bonjour, NestJS Open !")`, puis exécute-le avec `node bonjour.js`.
+</Exercice>
+
+</Exercices>
