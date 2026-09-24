@@ -1,0 +1,104 @@
+---
+title: "c · TypeScript, les bases"
+description: "Installer TypeScript, les types de base, les interfaces."
+duree: 45
+prerequis: Section b (l'asynchrone).
+exercices: 4
+sidebar:
+  order: 3
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+**TypeScript** ajoute des types au JavaScript. Il ne s'exécute pas directement : un compilateur (`tsc`) le transforme en JavaScript, en vérifiant au passage que les types sont respectés. L'intérêt : une erreur comme appeler `.toUpperCase()` sur un nombre est détectée avant même de lancer le programme, pas en production. NestJS est entièrement écrit en TypeScript.
+
+## Installer TypeScript
+
+Dans un dossier de ton choix, installe le compilateur :
+
+```bash
+npm install --save-dev typescript
+```
+
+Écris ensuite un fichier `.ts`, compile-le, puis exécute le JavaScript obtenu :
+
+```bash
+npx tsc mon-fichier.ts
+node mon-fichier.js
+```
+
+Pas besoin de `tsconfig.json` pour ces exercices : sans lui, `tsc` compile un seul fichier avec des réglages par défaut qui conviennent très bien. Tu en créeras un avec la CLI NestJS, en partie 3 — ses propres réglages remplaceront ceux-ci.
+
+## Types de base
+
+```ts
+const pseudo: string = 'Clémence';
+const tour: number = 3;
+const estVivant: boolean = true;
+const joueurs: string[] = ['Clémence', 'Yanis'];
+```
+
+En pratique, tu écriras rarement ces annotations sur de simples variables : TypeScript **infère** le type depuis la valeur. Les annotations deviennent utiles sur les paramètres de fonction, que TypeScript ne peut pas deviner :
+
+```ts
+function crier(message: string): string {
+	return message.toUpperCase();
+}
+```
+
+Ici, `string` avant les deux-points type le paramètre `message`, et celui après les parenthèses type ce que la fonction renvoie.
+
+## Unions et alias de type
+
+Une **union** autorise plusieurs types possibles, avec `|` :
+
+```ts
+type Role = 'loup-garou' | 'villageois' | 'voyante' | null;
+```
+
+`Role` est un **alias de type** : un nom réutilisable pour un type, ici une liste fermée de valeurs possibles (plus quelques fautes de frappe en moins que si `role` était juste `string`).
+
+## Les interfaces
+
+Une **interface** décrit la forme d'un objet : quels champs, avec quels types.
+
+```ts
+interface Joueur {
+	pseudo: string;
+	role: Role;
+	votes?: number; // le ? rend le champ optionnel
+}
+
+function presenter(joueur: Joueur): string {
+	return `${joueur.pseudo} (${joueur.role ?? 'rôle inconnu'})`;
+}
+```
+
+Si tu appelles `presenter({ pseudo: 'Clémence' })`, sans `role`, TypeScript refuse de compiler : `role` n'est pas optionnel dans l'interface. C'est le genre d'erreur que tu préfères voir tout de suite plutôt qu'en pleine partie.
+
+<Exercices partie={1} de={8} a={11}>
+
+<Exercice numero="1.8" titre="Typer un village">
+Écris une interface `Village` avec un champ `nom` (`string`) et un champ `joueurs` (un tableau de `Joueur`, l'interface ci-dessus). Écris une fonction `compterLoups(village: Village): number` qui renvoie le nombre de joueurs dont le `role` vaut `'loup-garou'`.
+</Exercice>
+
+<Exercice numero="1.9" titre="Corriger les types">
+Ce fichier ne compile pas. Corrige les annotations de type sans changer le comportement :
+
+```ts
+function ajouterVote(votes: string): number {
+  return votes + 1;
+}
+```
+</Exercice>
+
+<Exercice numero="1.10" titre="Une union de phases">
+Déclare un alias de type `Phase` : `'jour' | 'nuit'`. Écris une fonction `phaseSuivante(phase: Phase): Phase` qui renvoie l'autre phase (`'jour'` donne `'nuit'`, et inversement). Vérifie que TypeScript refuse `phaseSuivante('matin')`.
+</Exercice>
+
+<Exercice numero="1.11" titre="Un paramètre optionnel">
+Écris une fonction `presenterVillage(nom: string, tour?: number): string` qui renvoie `` `${nom}, tour ${tour}` `` si `tour` est fourni, et juste `nom` sinon. Vérifie que l'appeler avec un seul argument compile sans erreur.
+</Exercice>
+
+</Exercices>

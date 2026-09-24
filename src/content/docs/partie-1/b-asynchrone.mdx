@@ -1,0 +1,97 @@
+---
+title: "b · L'asynchrone : callbacks, promesses et async/await"
+description: "Pourquoi le JavaScript est asynchrone, les promesses, puis async/await."
+duree: 45
+prerequis: Section a (le JavaScript moderne).
+exercices: 4
+sidebar:
+  order: 2
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Lire un fichier, interroger une base de données, appeler une autre API : ces opérations prennent du temps. Un serveur backend ne peut pas rester bloqué à attendre — il doit pouvoir traiter d'autres requêtes pendant ce temps-là. C'est pour ça que ces opérations sont **asynchrones**.
+
+## Les callbacks, et leur problème
+
+La première façon de gérer l'asynchrone en JavaScript : passer une fonction à exécuter une fois le résultat prêt.
+
+```js
+chargerJoueur(id, (joueur) => {
+	console.log(joueur.pseudo);
+});
+```
+
+Ça fonctionne, mais s'enchaîner plusieurs appels asynchrones les uns dans les autres devient vite illisible — on appelle ça le *callback hell*. Le JavaScript moderne a une meilleure solution.
+
+## Les promesses
+
+Une **promesse** (`Promise`) représente une valeur qui sera disponible plus tard. Elle a trois états : en attente, tenue (*fulfilled*, avec une valeur) ou rompue (*rejected*, avec une erreur).
+
+Réécrivons `chargerJoueur` pour qu'elle renvoie une promesse, au lieu d'attendre un callback :
+
+```js
+function chargerJoueur(id) {
+	return new Promise((resolve, reject) => {
+		setTimeout(() => {
+			if (id) resolve({ id, pseudo: 'Clémence' });
+			else reject(new Error('id manquant'));
+		}, 100);
+	});
+}
+
+chargerJoueur(1)
+	.then((joueur) => console.log(joueur.pseudo))
+	.catch((erreur) => console.error(erreur.message));
+```
+
+`.then()` s'exécute si la promesse est tenue, `.catch()` si elle est rompue.
+
+## `async`/`await`
+
+`async`/`await` est une syntaxe qui rend le code asynchrone aussi lisible que du code synchrone. Une fonction `async` renvoie toujours une promesse, et `await` attend qu'une promesse soit tenue avant de continuer.
+
+```js
+async function afficherJoueur(id) {
+	try {
+		const joueur = await chargerJoueur(id);
+		console.log(joueur.pseudo);
+	} catch (erreur) {
+		console.error(erreur.message);
+	}
+}
+```
+
+`await` ne peut être utilisé qu'à l'intérieur d'une fonction `async`. Les erreurs se gèrent avec un simple `try`/`catch`, comme du code synchrone.
+
+## Lancer plusieurs promesses en parallèle
+
+Si tu attends plusieurs promesses indépendantes, ne les enchaîne pas avec plusieurs `await` : elles attendraient l'une après l'autre. `Promise.all` les lance en même temps.
+
+```js
+async function chargerVillage(idsJoueurs) {
+	const joueurs = await Promise.all(idsJoueurs.map((id) => chargerJoueur(id)));
+	return joueurs;
+}
+```
+
+<Exercices partie={1} de={4} a={7}>
+
+<Exercice numero="1.4" titre="Une promesse simulée">
+Écris une fonction `attendre(ms)` qui renvoie une promesse tenue après `ms` millisecondes (utilise `setTimeout` et `resolve`, sans valeur). Utilise-la avec `.then()` pour afficher un message après une seconde.
+</Exercice>
+
+<Exercice numero="1.5" titre="async/await et Promise.all">
+Réécris l'exercice précédent avec `async`/`await`. Puis écris une fonction qui attend *deux* délais différents (par exemple 500 ms et 800 ms) **en parallèle** avec `Promise.all`, et affiche le temps total écoulé — il doit être proche de 800 ms, pas de 1300 ms.
+</Exercice>
+
+<Exercice numero="1.6" titre="Promisifier un callback">
+Écris une fonction à callback `chargerJoueur(id, callback)`, sur le modèle de l'exemple en début de section : elle simule un délai avec `setTimeout`, puis appelle `callback(joueur)`. Écris ensuite `chargerJoueurPromesse(id)`, qui fait la même chose mais renvoie une `Promise` au lieu de prendre un callback — c'est ce qu'on appelle *promisifier*. Utilise-la avec `await`.
+</Exercice>
+
+<Exercice numero="1.7" titre="Gérer une erreur">
+Écris une fonction `async` `chargerJoueurAvecRepli(id)` qui appelle `chargerJoueurPromesse` de l'exercice précédent. Si la promesse est rompue (par exemple parce que `id` est manquant), intercepte l'erreur avec `try`/`catch` et renvoie `{ pseudo: 'Invité' }` à la place, plutôt que de laisser planter le programme.
+</Exercice>
+
+</Exercices>

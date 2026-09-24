@@ -1,0 +1,116 @@
+---
+title: "d · TypeScript, classes et décorateurs"
+description: "Classes, interfaces implémentées, et une première rencontre avec les décorateurs."
+duree: 40
+prerequis: Section c (TypeScript, les bases).
+exercices: 3
+sidebar:
+  order: 4
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Deux dernières notions avant de plonger dans NestJS : les classes, et les décorateurs qui les accompagnent partout dans le framework. On va construire un même exemple pas à pas, en lui ajoutant une capacité à chaque étape.
+
+## Les classes
+
+Une classe regroupe des données et les fonctions qui les manipulent. TypeScript ajoute un raccourci bien pratique : déclarer et assigner une propriété directement dans les paramètres du constructeur.
+
+```ts
+class Village {
+	joueurs: string[] = [];
+
+	constructor(public nom: string) {}
+
+	ajouterJoueur(pseudo: string): void {
+		this.joueurs.push(pseudo);
+	}
+}
+
+const luneRousse = new Village('Lune Rousse');
+luneRousse.ajouterJoueur('Clémence');
+luneRousse.joueurs; // ['Clémence']
+```
+
+`public nom: string` fait trois choses en une ligne : déclare la propriété, la type, et l'assigne depuis l'argument reçu par le constructeur. Sans ce raccourci, il aurait fallu écrire `this.nom = nom;` à la main dans son corps.
+
+## Implémenter une interface
+
+Une classe peut **implémenter** une interface : TypeScript vérifie alors qu'elle a bien tous les champs et méthodes attendus. Ajoutons cette capacité à `Village` :
+
+```ts
+interface Presentable {
+	presenter(): string;
+}
+
+class Village implements Presentable {
+	joueurs: string[] = [];
+
+	constructor(public nom: string) {}
+
+	ajouterJoueur(pseudo: string): void {
+		this.joueurs.push(pseudo);
+	}
+
+	presenter(): string {
+		return `${this.nom} (${this.joueurs.length} joueurs)`;
+	}
+}
+```
+
+Si tu retires `presenter()` de la classe, TypeScript refuse de compiler : elle ne respecte plus l'interface qu'elle prétend implémenter.
+
+## Les décorateurs
+
+Un **décorateur** est une fonction précédée de `@`, appliquée à une classe, une méthode ou une propriété. Il peut observer ou modifier ce qu'il décore, sans toucher à son code. Ajoutons-en un à `Village` :
+
+```ts
+function Journal() {
+	return function (classe: any) {
+		console.log(`Classe chargée : ${classe.name}`);
+	};
+}
+
+@Journal()
+class Village implements Presentable {
+	joueurs: string[] = [];
+
+	constructor(public nom: string) {}
+
+	ajouterJoueur(pseudo: string): void {
+		this.joueurs.push(pseudo);
+	}
+
+	presenter(): string {
+		return `${this.nom} (${this.joueurs.length} joueurs)`;
+	}
+}
+// affiche déjà, ici : Classe chargée : Village
+
+new Village('Lune Rousse');
+```
+
+`Journal()` est une **fabrique de décorateur** : une fonction qui renvoie le décorateur réellement appliqué. C'est pour ça que tu écris `@Journal()`, avec des parenthèses, et pas juste `@Journal`.
+
+Remarque où se trouve le commentaire : le message s'affiche dès que la classe est **déclarée**, au chargement du fichier — pas à chaque `new Village(...)`. Un décorateur de classe observe la déclaration, pas les instances qu'on en crée ensuite.
+
+Les décorateurs font partie du langage : rien à activer dans `tsconfig.json` pour l'exemple ci-dessus. NestJS active tout de même deux options dans le sien, `experimentalDecorators` et `emitDecoratorMetadata`, pour que ses décorateurs sachent reconnaître automatiquement le type de tes dépendances — un projet créé avec la CLI NestJS les a déjà activées, tu n'auras rien à faire quand tu y arriveras.
+
+Tu ne verras jamais un décorateur aussi simple dans du code réel, mais le principe est exactement celui que tu retrouveras avec NestJS dès la partie 3 : `@Controller('api/villages')` ou `@Injectable()` sont des décorateurs, en plus élaborés. Le framework les lit pour savoir comment assembler ton application.
+
+<Exercices partie={1} de={12} a={14}>
+
+<Exercice numero="1.12" titre="Une classe Joueur">
+Écris une interface `JoueurDonnees` avec `pseudo: string` et `role: string | null`. Écris ensuite une classe `Joueur` qui l'implémente, avec `pseudo` et `role` en propriétés du constructeur (le raccourci `public`), et une méthode `estVivant(): boolean` qui renvoie `true` (pour l'instant, tous les joueurs sont vivants).
+</Exercice>
+
+<Exercice numero="1.13" titre="Appliquer un décorateur">
+Applique le décorateur `Journal()` de la leçon à ta classe `Joueur` de l'exercice précédent. Vérifie dans la console que le message s'affiche dès l'exécution du fichier — même avant de créer une instance.
+</Exercice>
+
+<Exercice numero="1.14" titre="Écrire son propre décorateur">
+À toi d'écrire un décorateur, sur le modèle de `Journal()`. Écris `Horodate()`, qui affiche `Déclarée à` suivi de l'heure (`new Date().toLocaleTimeString()`) au moment où la classe est déclarée. Applique-le à ta classe `Joueur`, en plus de `@Journal()` — rien n'empêche de cumuler plusieurs décorateurs sur une même classe.
+</Exercice>
+
+</Exercices>

@@ -1,0 +1,122 @@
+---
+title: "a · Le JavaScript moderne utile au backend"
+description: "const/let, fonctions fléchées, déstructuration, spread et modules."
+duree: 40
+prerequis: "Partie 0 terminée : terminal, Git, VS Code et Node.js installés."
+exercices: 3
+sidebar:
+  order: 1
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Le JavaScript a beaucoup changé depuis ses débuts. Cette section couvre la syntaxe que tu croiseras dans tout le reste du cours — pas tout le langage, juste ce qui sert à écrire un backend clair.
+
+## `const` et `let`
+
+Oublie `var` : il pose des problèmes de portée que `const` et `let` évitent. Utilise `const` par défaut, et `let` seulement si la variable doit changer de valeur.
+
+```js
+const nom = 'Lune Rousse'; // ne sera jamais réassignée
+let tour = 1; // va être incrémentée
+tour = tour + 1;
+```
+
+## Les fonctions fléchées
+
+Une fonction fléchée (*arrow function*) s'écrit plus court qu'une fonction classique, surtout pour de petites fonctions passées en argument.
+
+```js
+// Fonction classique
+function estUnLoup(joueur) {
+	return joueur.role === 'loup-garou';
+}
+
+// Fonction fléchée équivalente
+const estUnLoup = (joueur) => joueur.role === 'loup-garou';
+```
+
+Avec un seul argument et une seule expression retournée, tu peux omettre les parenthèses et le `return`. C'est pratique avec des méthodes comme `.filter()` ou `.map()` :
+
+```js
+const joueurs = [
+	{ pseudo: 'Clémence', role: 'loup-garou' },
+	{ pseudo: 'Yanis', role: null },
+	{ pseudo: 'Oscar', role: 'loup-garou' },
+];
+
+const loups = joueurs.filter((j) => j.role === 'loup-garou');
+const pseudos = joueurs.map((j) => j.pseudo);
+```
+
+## La déstructuration
+
+Extraire des champs d'un objet, ou des éléments d'un tableau, sans écrire `objet.champ` à chaque fois :
+
+```js
+const village = { nom: 'Lune Rousse', joueurs: ['Clémence', 'Yanis', 'Maëlle'] };
+const { nom, joueurs } = village;
+
+const [premier, deuxieme] = joueurs;
+```
+
+Tu peux renommer un champ pendant la déstructuration, avec `{ joueurs: liste }` par exemple — utile si le nom `joueurs` est déjà pris ailleurs dans ta fonction.
+
+Tu peux aussi donner une valeur par défaut, utile pour un champ optionnel :
+
+```js
+function presenter({ pseudo, role = 'rôle inconnu' }) {
+	return `${pseudo} (${role})`;
+}
+```
+
+Remarque au passage les **template literals**, entre backticks, qui insèrent des valeurs avec `${...}` — plus lisibles que la concaténation avec `+`.
+
+## Spread et modules
+
+Le spread (`...`) copie le contenu d'un objet ou d'un tableau dans un autre. C'est la façon idiomatique de modifier une valeur sans la muter :
+
+```js
+const optionsParDefaut = { phase: 'jour', tour: 1 };
+const partieEnCours = { ...optionsParDefaut, tour: 3 };
+// { phase: 'jour', tour: 3 }
+```
+
+Enfin, ton code sera réparti en plusieurs fichiers, reliés par `import` et `export` :
+
+```js title="villages.js"
+export function creerVillage(nom) {
+	return { nom, joueurs: [] };
+}
+```
+
+```js title="main.js"
+import { creerVillage } from './villages.js';
+
+const village = creerVillage('Lune Rousse');
+```
+
+<Exercices partie={1} de={1} a={3}>
+
+<Exercice numero="1.1" titre="Refactoriser vers le JavaScript moderne">
+Reprends cette fonction et réécris-la avec `const`, une fonction fléchée, la déstructuration et un template literal :
+
+```js
+function decrire(joueur) {
+  var pseudo = joueur.pseudo;
+  var role = joueur.role;
+  return pseudo + ' est ' + (role || 'un rôle encore inconnu');
+}
+```
+</Exercice>
+
+<Exercice numero="1.2" titre="Un petit module">
+Crée deux fichiers. Dans `village.js`, exporte une fonction `ajouterJoueur(village, pseudo)` qui renvoie un **nouveau** village avec le joueur ajouté, sans modifier l'original (utilise le spread sur le tableau `joueurs`). Dans `main.js`, importe cette fonction et vérifie avec `console.log` que le village d'origine n'a pas changé.
+</Exercice>
+
+<Exercice numero="1.3" titre="Rest et paramètre par défaut">
+Écris une fonction `compterVotes(cible = 'personne', ...votes)` : `cible` est un pseudo avec une valeur par défaut, et `...votes` récupère tous les arguments suivants dans un tableau (le **rest**). Elle renvoie le nombre de fois où `cible` apparaît dans `votes`. Vérifie que `compterVotes()`, appelée sans argument, ne plante pas.
+</Exercice>
+
+</Exercices>
