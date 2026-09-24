@@ -1,0 +1,80 @@
+---
+title: "e · Les données de test"
+description: "Un script qui remplit la base avec des données connues, et qu'on peut relancer à volonté."
+projet: loup-garou
+duree: 40
+prerequis: Section d (les migrations).
+exercices: 2
+sidebar:
+  order: 5
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Une base fraîchement migrée est vide. Pour développer, tester une route ou montrer ton travail, il te faut des données connues, toujours les mêmes, disponibles en une commande — pas dix `POST` tapés à la main à chaque fois. C'est le rôle d'un script de **données de test** (*seed*, en anglais).
+
+Ce script n'a pas besoin de serveur HTTP : il a seulement besoin de ta base et de tes entités. NestJS permet de démarrer l'application **sans** l'écouter sur un port, avec `createApplicationContext` : les modules sont construits, l'injection de dépendances fonctionne, la connexion à la base est établie — mais aucune route n'est servie.
+
+```ts title="src/seed.ts" {8-10,12,13,15}
+import { NestFactory } from '@nestjs/core';
+import { DataSource } from 'typeorm';
+import { AppModule } from './app.module.js';
+import { Utilisateur } from './utilisateurs/utilisateur.entity.js';
+import { Village } from './villages/village.entity.js';
+import { Participation } from './villages/participation.entity.js';
+
+if (process.env.NODE_ENV === 'production') {
+	throw new Error('Ce script efface les tables : interdit en production.');
+}
+
+const app = await NestFactory.createApplicationContext(AppModule, { logger: ['error'] });
+const dataSource = app.get(DataSource);
+
+await dataSource.query('TRUNCATE TABLE participations, villages, utilisateurs RESTART IDENTITY');
+
+const [louve, chasseur, voyante] = await dataSource.getRepository(Utilisateur).save([
+	{ pseudo: 'LouveGrise' },
+	{ pseudo: 'Chasseur42' },
+	{ pseudo: 'Voyante7' },
+]);
+const village = await dataSource.getRepository(Village).save({ nom: 'Lune Rousse' });
+await dataSource.getRepository(Participation).save([
+	{ village, utilisateur: louve, role: 'loup-garou' },
+	{ village, utilisateur: chasseur, role: 'chasseur' },
+	{ village, utilisateur: voyante, role: 'voyante' },
+]);
+
+console.log('3 utilisateurs, 1 village, 3 participations créés.');
+await app.close();
+```
+
+Quelques points à relever :
+
+- `app.get(DataSource)` récupère la connexion, et `dataSource.getRepository(Utilisateur)` te donne le même repository que `@InjectRepository` — sans passer par un service. `save` accepte un **tableau** : il écrit toutes les lignes d'un coup et te les rend avec leur `id`, que la déstructuration (partie 1) range dans `louve`, `chasseur` et `voyante`.
+- Les participations reçoivent des **objets** (`village`, `utilisateur`), comme en section c : TypeORM en tire les clés étrangères.
+- `TRUNCATE … RESTART IDENTITY` vide les tables **et** remet les compteurs d'`id` à 1. Toutes les tables liées se vident dans la même commande, ce qui évite de se soucier de l'ordre des clés étrangères.
+
+Ce dernier point rend le script **idempotent** : le relancer dix fois donne exactement le même résultat qu'une seule fois, une base avec 3 utilisateurs, 1 village et 3 participations. Sans le `TRUNCATE`, chaque exécution ajouterait un nouveau village et de nouveaux joueurs, et les `id` dériveraient. Un script de données de test que tu peux relancer sans réfléchir, c'est un script que tu utiliseras.
+
+C'est aussi un script **destructeur** : `TRUNCATE` efface tout, sans retour possible. D'où la garde en tête de fichier, qui refuse de s'exécuter si `NODE_ENV` vaut `production`. Une base de production ne doit jamais recevoir ce script, même par erreur.
+
+Branche-le à un script `npm`, en construisant le projet d'abord (comme pour les migrations) :
+
+```json title="package.json"
+"seed": "nest build && node dist/seed.js"
+```
+
+L'ordre de travail devient : `npm run migration:run` pour créer les tables, puis `npm run seed` pour les remplir. Avec la base peuplée, `GET /api/villages/1` renvoie le village avec ses trois participations — la partie 6 réutilisera ce jeu de données pour tester ton API.
+
+<Exercices partie={5} de={17} a={18}>
+
+<Exercice numero="5.17" titre="Des produits pour la marketplace">
+Écris `src/seed.ts` : deux vendeurs, quatre produits répartis entre eux, chacun avec deux ou trois variantes, et une commande de quelques lignes. Ajoute le script `seed` à `package.json`, exécute-le, et vérifie le résultat avec `GET /api/vendeurs/1`, `GET /api/produits/1` et `GET /api/commandes/1`.
+</Exercice>
+
+<Exercice numero="5.18" titre="Un script qu'on peut relancer">
+Rends ton script idempotent avec un `TRUNCATE … RESTART IDENTITY` sur les cinq tables (`lignes_commande`, `commandes`, `variantes`, `produits`, `vendeurs`). Lance-le deux fois de suite et compare le nombre de lignes de chaque table avec `psql` : il doit être identique, et les `id` recommencer à 1. Ajoute la garde `NODE_ENV === 'production'`, puis vérifie avec `NODE_ENV=production node dist/seed.js` qu'elle refuse de s'exécuter, sans toucher à la base.
+</Exercice>
+
+</Exercices>

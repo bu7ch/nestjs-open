@@ -1,0 +1,177 @@
+---
+title: "a · PostgreSQL et TypeORM"
+description: "Lancer une base avec Docker, s'y connecter depuis NestJS, et écrire une première entité."
+projet: loup-garou
+duree: 50
+prerequis: Partie 4, surtout la section d (la configuration).
+exercices: 4
+sidebar:
+  order: 1
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Une **base de données** est un programme à part, qui stocke tes données sur disque et répond à tes questions : ton serveur NestJS lui parle, comme un client parle à un serveur HTTP. **PostgreSQL** est l'une des plus utilisées. Pour ne pas l'installer sur ta machine, on la lance dans un **conteneur**, avec Docker ou avec Podman.
+
+:::note[Docker ou Podman]
+Il te faut l'un des deux. **Docker Desktop** est le plus répandu (voir `docs.docker.com/get-started/get-docker/`) ; vérifie avec `docker --version`. **Podman** (`podman.io`) est une alternative libre et gratuite, qui n'a pas besoin d'un service permanent en arrière-plan : vérifie avec `podman --version`. Sur macOS et Windows, Podman lance une petite machine virtuelle, à préparer une seule fois avec `podman machine init` puis `podman machine start` ; sous Linux, il fonctionne directement.
+
+Les deux outils lisent le même fichier `docker-compose.yml`. Avec Podman, remplace simplement `docker` par `podman` dans toutes les commandes de cette partie (`podman compose up -d`, `podman compose exec db psql …`). `podman compose` s'appuie sur un outil compose à installer s'il manque (`podman-compose`, ou `docker-compose`) : Podman te le dit au premier lancement. Le reste du cours écrit `docker compose`.
+:::
+
+À la racine du projet, crée `docker-compose.yml` :
+
+```yaml title="docker-compose.yml"
+services:
+  db:
+    image: docker.io/library/postgres:16
+    environment:
+      POSTGRES_USER: loupgarou
+      POSTGRES_PASSWORD: loupgarou
+      POSTGRES_DB: loupgarou
+    ports:
+      - "5432:5432"
+    volumes:
+      - donnees-postgres:/var/lib/postgresql/data
+
+volumes:
+  donnees-postgres:
+```
+
+Le nom complet de l'image (`docker.io/library/…`) évite que Podman te demande dans quel registre la chercher ; Docker l'accepte aussi. Le `volumes` garde les données même si tu supprimes le conteneur : sans lui, tout serait perdu à chaque arrêt. Lance la base en arrière-plan :
+
+```bash
+docker compose up -d
+```
+
+## Un ORM pour lui parler
+
+Écrire du SQL à la main pour chaque requête devient vite pénible. Un **ORM** (*Object-Relational Mapper*) fait le lien entre les classes de ton code et les tables de la base. On utilise **TypeORM**, qui s'intègre à NestJS par un paquet dédié :
+
+```bash
+npm install @nestjs/typeorm typeorm pg
+```
+
+`pg` est le pilote qui parle réellement à PostgreSQL. Les paramètres de connexion vont dans le `.env`, comme en partie 4 :
+
+```bash title=".env"
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=loupgarou
+DB_PASSWORD=loupgarou
+DB_NAME=loupgarou
+```
+
+Et `AppModule` s'y connecte au démarrage, en lisant ces variables avec `ConfigService` :
+
+```ts title="src/app.module.ts" {2,3,8-20}
+import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { TypeOrmModule } from '@nestjs/typeorm';
+
+@Module({
+	imports: [
+		ConfigModule.forRoot({ isGlobal: true }),
+		TypeOrmModule.forRootAsync({
+			inject: [ConfigService],
+			useFactory: (config: ConfigService) => ({
+				type: 'postgres',
+				host: config.get('DB_HOST'),
+				port: config.get('DB_PORT'),
+				username: config.get('DB_USER'),
+				password: config.get('DB_PASSWORD'),
+				database: config.get('DB_NAME'),
+				autoLoadEntities: true,
+				synchronize: true,
+			}),
+		}),
+	],
+})
+export class AppModule {}
+```
+
+`forRootAsync` avec `inject` te rappelle quelque chose : c'est de l'injection de dépendances, comme en partie 3. NestJS construit `ConfigService` d'abord, puis te le passe à `useFactory`. Deux options méritent une explication :
+
+- `autoLoadEntities: true` : toutes les entités déclarées dans un module (voir plus bas) sont enregistrées automatiquement.
+- `synchronize: true` : TypeORM crée et modifie les tables tout seul pour qu'elles correspondent à tes entités. Pratique pour démarrer, **dangereux en production** — la section d explique pourquoi, et ce qui le remplace.
+
+## Une première entité
+
+Une **entité** est une classe qui décrit une table. Chaque propriété décorée devient une colonne — encore des décorateurs, toujours le même principe qu'en partie 1 :
+
+```ts title="src/utilisateurs/utilisateur.entity.ts"
+import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+
+@Entity('utilisateurs')
+export class Utilisateur {
+	@PrimaryGeneratedColumn()
+	id: number;
+
+	@Column()
+	pseudo: string;
+}
+```
+
+`@Entity('utilisateurs')` nomme la table. `@PrimaryGeneratedColumn()` est la clé primaire : un numéro unique que la base attribue elle-même, à chaque nouvelle ligne. TypeORM déduit le type de la colonne du type TypeScript (`string` devient `character varying`, `number` devient `integer`).
+
+Pour l'utiliser, le module de l'entité la déclare avec `TypeOrmModule.forFeature`, ce qui la rend accessible, et l'enregistre auprès de la connexion (grâce à `autoLoadEntities`) :
+
+```ts title="src/utilisateurs/utilisateurs.module.ts" {2,3,8}
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { Utilisateur } from './utilisateur.entity.js';
+import { UtilisateursService } from './utilisateurs.service.js';
+import { UtilisateursController } from './utilisateurs.controller.js';
+
+@Module({
+	imports: [TypeOrmModule.forFeature([Utilisateur])],
+	controllers: [UtilisateursController],
+	providers: [UtilisateursService],
+})
+export class UtilisateursModule {}
+```
+
+Le service reçoit un **repository** : l'objet qui lit et écrit les lignes de cette table. On l'injecte avec `@InjectRepository`, par le constructeur, comme n'importe quel provider :
+
+```ts title="src/utilisateurs/utilisateurs.service.ts" {2,3,8,11}
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Utilisateur } from './utilisateur.entity.js';
+
+@Injectable()
+export class UtilisateursService {
+	constructor(@InjectRepository(Utilisateur) private readonly utilisateurs: Repository<Utilisateur>) {}
+
+	trouverTous() {
+		return this.utilisateurs.find();
+	}
+}
+```
+
+Ajoute un controller `GET /api/utilisateurs` qui appelle `trouverTous()`, et redémarre le serveur. La réponse est un tableau vide — normal, la table existe mais aucune ligne n'y a été ajoutée. Vérifie que la table a bien été créée, directement dans la base :
+
+```bash
+docker compose exec db psql -U loupgarou -d loupgarou -c '\dt'
+```
+
+<Exercices partie={5} de={1} a={4}>
+
+<Exercice numero="5.1" titre="Une base pour la marketplace">
+Écris un `docker-compose.yml` avec un service PostgreSQL 16 (utilisateur, mot de passe et base nommés `marketplace`) et lance-le, avec Docker ou avec Podman. Installe `@nestjs/typeorm`, `typeorm` et `pg`. Ajoute les cinq variables `DB_*` à ton `.env`, et branche `TypeOrmModule.forRootAsync` dans `AppModule` (avec `autoLoadEntities` et `synchronize`). Vérifie que le serveur démarre sans erreur.
+</Exercice>
+
+<Exercice numero="5.2" titre="Couper la base, exprès">
+Arrête la base (`docker compose stop`), puis relance le serveur NestJS. Note le message d'erreur exact, et à quel rythme il se répète : c'est ce que tu verras un jour en production, quand la base sera injoignable. Relance la base (`docker compose start`) pour que tout fonctionne à nouveau.
+</Exercice>
+
+<Exercice numero="5.3" titre="Les vendeurs">
+Crée une entité `Vendeur` (`id`, `nom`), son module avec `TypeOrmModule.forFeature`, et un service qui injecte son repository. Ajoute `GET /api/vendeurs`, qui renvoie tous les vendeurs. Avec la commande `\dt` de la section, vérifie que la table `vendeurs` a bien été créée.
+</Exercice>
+
+<Exercice numero="5.4" titre="Un vendeur, pour de vrai">
+Ajoute `POST /api/vendeurs`, avec un DTO validé (`nom` non vide, section b de la partie 4). Utilise `create` puis `save` sur le repository : `create` fabrique l'objet, `save` l'écrit en base et te le renvoie avec son `id`. Crée un vendeur, **redémarre le serveur**, puis relis `GET /api/vendeurs` : le vendeur est toujours là. C'est toute la différence avec les tableaux en mémoire.
+</Exercice>
+
+</Exercices>

@@ -1,0 +1,190 @@
+---
+title: "c · Les relations"
+description: "Relier des tables entre elles, charger les données liées, et comprendre ce que la base refuse."
+projet: loup-garou
+duree: 65
+prerequis: Section b (le repository).
+exercices: 5
+sidebar:
+  order: 3
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Un village a des joueurs, qui ont chacun un rôle. Plutôt que de tout mettre dans une seule table, on en crée une pour les **villages**, une pour les **utilisateurs**, et une troisième — `participations` — qui dit « cet utilisateur joue dans ce village, avec ce rôle, et il est vivant ou mort ». Chaque ligne de `participations` contient deux **clés étrangères** : le numéro d'un village, et le numéro d'un utilisateur.
+
+Une clé étrangère est une colonne dont la valeur doit correspondre à l'`id` d'une ligne d'une autre table. TypeORM la crée pour toi, à partir de deux décorateurs qui se répondent :
+
+- `@ManyToOne` : le côté « plusieurs ». **C'est lui qui porte la colonne** : plusieurs participations pour un village.
+- `@OneToMany` : le côté « un », l'inverse. Il ne crée aucune colonne, il permet seulement de lire les participations depuis un village.
+
+```ts title="src/villages/village.entity.ts" {2,12,13}
+import { Column, Entity, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
+import type { Participation } from './participation.entity.js';
+
+@Entity('villages')
+export class Village {
+	@PrimaryGeneratedColumn()
+	id: number;
+
+	@Column()
+	nom: string;
+
+	@OneToMany('Participation', 'village')
+	participations: Participation[];
+}
+```
+
+```ts title="src/villages/participation.entity.ts" {2,16,17,19,20}
+import { Column, Entity, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import type { Village } from './village.entity.js';
+import { Utilisateur } from '../utilisateurs/utilisateur.entity.js';
+
+@Entity('participations')
+export class Participation {
+	@PrimaryGeneratedColumn()
+	id: number;
+
+	@Column()
+	role: string;
+
+	@Column({ default: true })
+	vivant: boolean;
+
+	@ManyToOne('Village', 'participations', { onDelete: 'CASCADE' })
+	village: Village;
+
+	@ManyToOne(() => Utilisateur)
+	utilisateur: Utilisateur;
+}
+```
+
+Deux détails demandent une explication.
+
+**Le nom entre guillemets, et `import type`.** `Village` connaît `Participation`, et `Participation` connaît `Village` : deux fichiers qui s'importent l'un l'autre. Écrit avec des imports ordinaires et `() => Village`, le serveur plante au démarrage avec `ReferenceError: Cannot access 'Village' before initialization` — chaque fichier attend que l'autre soit chargé. La parade : désigner l'autre entité par son **nom** (`'Village'`), et l'importer avec `import type`, qui n'existe qu'à la compilation et disparaît du JavaScript produit. Il n'y a alors plus d'import réel, donc plus de cycle. `Utilisateur`, lui, ne connaît pas `Participation` : la relation n'est déclarée que d'un côté, un import ordinaire suffit.
+
+**`onDelete: 'CASCADE'`.** On y revient plus bas.
+
+## Charger les données liées
+
+Par défaut, TypeORM ne charge que les colonnes de la table demandée. Pour obtenir aussi les données liées, il faut le dire, avec l'option `relations` :
+
+```ts title="src/villages/villages.service.ts" {13,24,33,34}
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Village } from './village.entity.js';
+import { Participation } from './participation.entity.js';
+import { UtilisateursService } from '../utilisateurs/utilisateurs.service.js';
+
+@Injectable()
+export class VillagesService {
+	constructor(
+		@InjectRepository(Village) private readonly villages: Repository<Village>,
+		@InjectRepository(Participation) private readonly participations: Repository<Participation>,
+		private readonly utilisateursService: UtilisateursService,
+	) {}
+
+	creer(nom: string) {
+		const village = this.villages.create({ nom });
+		return this.villages.save(village);
+	}
+
+	async trouverUn(id: number) {
+		const village = await this.villages.findOne({
+			where: { id },
+			relations: { participations: { utilisateur: true } },
+		});
+		if (!village) throw new NotFoundException(`Village ${id} introuvable`);
+		return village;
+	}
+
+	async rejoindre(villageId: number, utilisateurId: number, role: string) {
+		const village = await this.villages.findOneBy({ id: villageId });
+		if (!village) throw new NotFoundException(`Village ${villageId} introuvable`);
+		const utilisateur = await this.utilisateursService.trouverUn(utilisateurId);
+		const participation = this.participations.create({ village, utilisateur, role });
+		return this.participations.save(participation);
+	}
+}
+```
+
+Le service utilise `UtilisateursService` : il est dans un autre module, donc `UtilisateursModule` doit l'**exporter** et `VillagesModule` l'**importer** — exactement comme en partie 3, section d. `VillagesModule` déclare aussi ses deux entités :
+
+```ts title="src/villages/villages.module.ts"
+@Module({
+	imports: [TypeOrmModule.forFeature([Village, Participation]), UtilisateursModule],
+	controllers: [VillagesController],
+	providers: [VillagesService],
+})
+export class VillagesModule {}
+```
+
+Le controller expose `POST /api/villages`, `GET /api/villages/:id` et `POST /api/villages/:id/rejoindre` (corps : `utilisateurId` et `role`), avec des DTO validés comme en partie 4. Avec un village et deux joueurs, `GET /api/villages/1` renvoie :
+
+```json
+{
+	"id": 1,
+	"nom": "Lune Rousse",
+	"participations": [
+		{ "id": 1, "role": "loup-garou", "vivant": true, "utilisateur": { "id": 2, "pseudo": "LouveGrise" } },
+		{ "id": 2, "role": "voyante", "vivant": true, "utilisateur": { "id": 3, "pseudo": "Chasseur42" } }
+	]
+}
+```
+
+Sans l'option `relations`, la clé `participations` serait tout simplement absente : `rejoindre`, qui lit le village avec `findOneBy`, n'en renvoie aucune.
+
+## Ce que la base refuse
+
+Essaie de supprimer un utilisateur qui joue dans un village. La réponse est une erreur `500`, et le serveur affiche :
+
+```text
+update or delete on table "utilisateurs" violates foreign key constraint "FK_…" on table "participations"
+```
+
+Ce n'est pas un bug de ton code : c'est PostgreSQL qui **protège l'intégrité** de tes données. Supprimer l'utilisateur laisserait des participations pointant vers une ligne qui n'existe plus, et la base refuse de te laisser faire. Le contraire est vrai aussi : créer une participation pour un utilisateur qui n'existe pas échoue (`insert or update on table … violates foreign key constraint`).
+
+Ce refus est le comportement par défaut. Quand il n'a pas de sens, on choisit autre chose : c'est le rôle de `onDelete: 'CASCADE'` sur `Participation.village`. Supprime un village, et toutes ses participations disparaissent avec lui — normal, une participation n'a aucun sens sans son village. Ce n'est pas un réflexe à généraliser : supprimer automatiquement l'historique d'un joueur qui quitte le jeu serait, lui, une décision à peser.
+
+Pour un refus, un `500` est pourtant une mauvaise réponse : le client n'a rien cassé, il demande une chose que les données interdisent. Le code SQL `23503` désigne cette violation, que tu peux attraper pour répondre `409 Conflict` :
+
+```ts {1,6-7}
+import { QueryFailedError } from 'typeorm';
+
+try {
+	await this.utilisateurs.delete(id);
+} catch (erreur) {
+	if (erreur instanceof QueryFailedError && (erreur.driverError as { code?: string }).code === '23503') {
+		throw new ConflictException('Cet utilisateur participe à un village : suppression impossible');
+	}
+	throw erreur;
+}
+```
+
+Le `throw erreur` final est important : toute autre erreur doit continuer à remonter telle quelle.
+
+<Exercices partie={5} de={9} a={13}>
+
+<Exercice numero="5.9" titre="Les produits d'un vendeur">
+Relie `Produit` à `Vendeur` : `@ManyToOne` côté produit (avec `onDelete: 'CASCADE'`), `@OneToMany` côté vendeur. Ajoute `POST /api/vendeurs/:id/produits`, qui crée un produit rattaché à ce vendeur (un `404` si le vendeur n'existe pas), avec le DTO de la partie 4. Les produits déjà en base n'ont pas de vendeur : c'est normal. Regarde avec `\d produits` la colonne `vendeurId` que TypeORM a ajoutée.
+</Exercice>
+
+<Exercice numero="5.10" titre="Un vendeur avec ses produits">
+Fais en sorte que `GET /api/vendeurs/:id` renvoie aussi les produits du vendeur, avec l'option `relations`. Compare avec la réponse sans elle : la clé `produits` disparaît.
+</Exercice>
+
+<Exercice numero="5.11" titre="Les variantes">
+Les variantes deviennent une table : crée l'entité `Variante` (`id`, `nom`, `stock` avec `default: 0`), reliée à `Produit` (`@ManyToOne` avec `onDelete: 'CASCADE'`). Ajoute `POST /api/produits/:id/variantes` (un `404` si le produit n'existe pas), et fais en sorte que `GET /api/produits/:id` renvoie les variantes du produit. Rappelle-toi de l'erreur au démarrage si les deux entités s'importent mutuellement.
+</Exercice>
+
+<Exercice numero="5.12" titre="Une commande et ses lignes">
+Crée `Commande` (`id`, `dateCommande` avec `@CreateDateColumn()`) et `LigneCommande` (`id`, `quantite`), reliée à sa commande (`onDelete: 'CASCADE'`) et à une `Variante`. Sur `Commande`, déclare `lignes` avec `{ cascade: true }` : `save` écrit alors la commande et toutes ses lignes d'un coup. `POST /api/commandes` reçoit `{ "lignes": [{ "varianteId": 1, "quantite": 2 }] }` (la validation de tableaux imbriqués, avec `@ValidateNested`, dépasse cette partie : on s'en passe ici), et `GET /api/commandes/:id` renvoie la commande avec ses lignes, leur variante, et le produit de chacune.
+</Exercice>
+
+<Exercice numero="5.13" titre="Casser l'intégrité, exprès">
+Commande une variante qui n'existe pas (`"varianteId": 999`) : note le message d'erreur exact du serveur. Puis passe une commande réelle, et essaie de supprimer le vendeur du produit commandé : note l'erreur, et explique pourquoi la base refuse. Enfin, attrape cette violation (code `23503`) pour que la suppression du vendeur réponde `409 Conflict` avec un message clair, sans casser le `404` d'un vendeur inconnu.
+</Exercice>
+
+</Exercices>

@@ -1,0 +1,195 @@
+---
+title: "f · Aller plus loin : Prisma"
+description: "Un autre ORM, pour situer TypeORM parmi ses alternatives."
+duree: 60
+prerequis: Section e (les données de test). Section bonus, non nécessaire pour la suite du cours.
+exercices: 3
+sidebar:
+  order: 6
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+TypeORM décrit tes tables avec des **classes décorées**. **Prisma** part d'une autre idée : un fichier de schéma, écrit dans son propre langage, dont il **génère** un client typé. Cette section refait le Loup-Garou de la section c avec Prisma, pour que tu reconnaisses son style quand tu le croiseras ailleurs. Le cours a été écrit avec Prisma 7 : on fixe la version majeure à l'installation.
+
+Fais l'essai dans un projet NestJS séparé, avec sa propre base — deux ORM ne doivent pas se disputer les mêmes tables.
+
+```bash
+npm install @prisma/client@7 @prisma/adapter-pg@7 pg @nestjs/config
+npm install --save-dev prisma@7
+```
+
+L'adaptateur `@prisma/adapter-pg` permet à Prisma de parler à PostgreSQL à travers le pilote `pg`, que tu connais déjà. L'URL de la base va dans le `.env` :
+
+```bash title=".env"
+DATABASE_URL="postgresql://loupgarou:loupgarou@localhost:5432/loupgarou"
+```
+
+La CLI de Prisma lit sa configuration dans `prisma.config.ts`, à la racine :
+
+```ts title="prisma.config.ts"
+import { defineConfig } from 'prisma/config';
+
+process.loadEnvFile();
+
+export default defineConfig({
+	schema: 'prisma/schema.prisma',
+	migrations: { path: 'prisma/migrations' },
+	datasource: { url: process.env.DATABASE_URL },
+});
+```
+
+## Le schéma
+
+Les trois tables de la section c s'écrivent dans `prisma/schema.prisma`, sans une ligne de TypeScript :
+
+```prisma title="prisma/schema.prisma"
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Utilisateur {
+  id             Int             @id @default(autoincrement())
+  pseudo         String
+  participations Participation[]
+}
+
+model Village {
+  id             Int             @id @default(autoincrement())
+  nom            String
+  participations Participation[]
+}
+
+model Participation {
+  id            Int         @id @default(autoincrement())
+  role          String
+  vivant        Boolean     @default(true)
+  village       Village     @relation(fields: [villageId], references: [id], onDelete: Cascade)
+  villageId     Int
+  utilisateur   Utilisateur @relation(fields: [utilisateurId], references: [id])
+  utilisateurId Int
+}
+```
+
+Tout ce que tu as écrit avec des décorateurs a son équivalent : `@id @default(autoincrement())` est la clé primaire générée, `@default(true)` la valeur par défaut, `onDelete: Cascade` le même comportement qu'en section c. Une relation se déclare des deux côtés : `village` et `villageId` sur `Participation` (la clé étrangère, avec `fields` et `references`), `participations` sur `Village` (l'inverse, sans colonne).
+
+## Migrer, puis générer
+
+```bash
+npx prisma migrate dev --name init
+npx prisma generate
+```
+
+`migrate dev` compare le schéma à la base, **écrit** la migration dans `prisma/migrations/` (un fichier SQL, à relire comme en section d) **et l'applique** : là où TypeORM demande deux commandes, Prisma n'en demande qu'une. `generate` fabrique ensuite le client typé, dans `src/generated/prisma` : `migrate dev` ne le fait pas à ta place. Ce dossier est produit par la machine, pas par toi : ajoute `src/generated` au `.gitignore`, et relance `npx prisma generate` après chaque changement du schéma (ou après avoir cloné le projet).
+
+## Le service Prisma
+
+Le client généré n'est pas un provider NestJS : il faut l'envelopper dans un service, que tu écris une fois pour tout le projet.
+
+```ts title="src/prisma/prisma.service.ts" {7,9,12,13,16,17}
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { PrismaClient } from '../generated/prisma/client.js';
+
+@Injectable()
+export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+	constructor(config: ConfigService) {
+		super({ adapter: new PrismaPg({ connectionString: config.get<string>('DATABASE_URL') }) });
+	}
+
+	async onModuleInit() {
+		await this.$connect();
+	}
+
+	async onModuleDestroy() {
+		await this.$disconnect();
+	}
+}
+```
+
+`PrismaService` **est** un `PrismaClient` (`extends`), configuré avec l'adaptateur. `onModuleInit` et `onModuleDestroy` sont des méthodes que NestJS appelle lui-même, l'une quand le module est prêt, l'autre à l'arrêt de l'application : on y ouvre et on y ferme la connexion. Un module `@Global()` l'exporte, pour n'avoir à l'importer nulle part ailleurs :
+
+```ts title="src/prisma/prisma.module.ts"
+import { Global, Module } from '@nestjs/common';
+import { PrismaService } from './prisma.service.js';
+
+@Global()
+@Module({
+	providers: [PrismaService],
+	exports: [PrismaService],
+})
+export class PrismaModule {}
+```
+
+Ajoute `PrismaModule` aux `imports` d'`AppModule` (avec `ConfigModule.forRoot({ isGlobal: true })`), et le service des villages s'écrit ainsi :
+
+```ts title="src/villages/villages.service.ts" {9,13,15}
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service.js';
+
+@Injectable()
+export class VillagesService {
+	constructor(private readonly prisma: PrismaService) {}
+
+	creer(nom: string) {
+		return this.prisma.village.create({ data: { nom } });
+	}
+
+	async trouverUn(id: number) {
+		const village = await this.prisma.village.findUnique({
+			where: { id },
+			include: { participations: { include: { utilisateur: true } } },
+		});
+		if (!village) throw new NotFoundException(`Village ${id} introuvable`);
+		return village;
+	}
+}
+```
+
+`include` joue le rôle de l'option `relations` de TypeORM : sans lui, les participations ne sont pas chargées. La réponse de `GET /api/villages/1` a exactement la forme de celle de la section c.
+
+## Un client qui connaît ton schéma
+
+L'avantage que Prisma met en avant se voit à la compilation. Écris `data: { nam: nom }` au lieu de `data: { nom }`, et TypeScript refuse, avant même de lancer le serveur :
+
+```text
+error TS2353: Object literal may only specify known properties, and 'nam' does not exist in type …
+```
+
+Le client a été **généré** à partir du schéma : il sait quelles tables et quelles colonnes existent, et te le rappelle à chaque frappe. Avec TypeORM, `create({ nam: … })` est déjà refusé aussi ; la différence est ailleurs — dans **d'où vient** le type : ici d'un fichier de schéma, là de tes classes.
+
+## Alors, lequel choisir ?
+
+| | TypeORM | Prisma |
+|---|---|---|
+| Décrire les tables | des classes décorées (les entités) | un fichier `schema.prisma` |
+| Les types TypeScript | tes classes | un client généré depuis le schéma |
+| Intégration NestJS | paquet officiel (`@nestjs/typeorm`, `@InjectRepository`) | à écrire : un `PrismaService` |
+| Migrations | `migration:generate`, puis `migration:run` | `prisma migrate dev`, en une commande |
+| Charger les données liées | l'option `relations` | l'option `include` |
+| L'étape à ne pas oublier | construire le projet avant la CLI | `prisma generate` après chaque changement de schéma |
+
+Il n'y a pas de mauvais choix : les notions de la partie — clés étrangères, migrations, données de test — sont **les mêmes** avec les deux. Le cours continue avec TypeORM, mieux intégré à NestJS.
+
+<Exercices partie={5} de={19} a={21}>
+
+<Exercice numero="5.19" titre="Un schéma Prisma pour la marketplace">
+Dans un nouveau projet NestJS, avec une base séparée (`docker compose exec db psql -U marketplace -d marketplace -c 'CREATE DATABASE marketplace_prisma;'`), installe Prisma 7 et écris `prisma.config.ts` et `prisma/schema.prisma` avec `Vendeur` et `Produit` (`nom`, `prix` en `Decimal @db.Decimal(10, 2)`, `categorie`, et la relation, avec `onDelete: Cascade`). Lance `migrate dev`, puis `generate`, et vérifie avec `\dt` que les tables existent. Ouvre le fichier SQL créé dans `prisma/migrations/` : c'est la même chose que la migration de la section d.
+</Exercice>
+
+<Exercice numero="5.20" titre="Lire avec Prisma">
+Écris `PrismaService` et `PrismaModule`. Ajoute `POST /api/vendeurs` et `GET /api/vendeurs/:id`, qui renvoie le vendeur avec ses produits (`include`). Renvoie une `NotFoundException` si `findUnique` ne trouve rien.
+</Exercice>
+
+<Exercice numero="5.21" titre="Rattacher un produit, et casser le typage">
+Ajoute `POST /api/vendeurs/:id/produits`, en rattachant le produit avec `vendeur: { connect: { id } }`. Vérifie que `prix` revient sous forme de chaîne, comme avec TypeORM. Rattache un produit à un vendeur inexistant : Prisma lève une erreur de code `P2025` (`Prisma.PrismaClientKnownRequestError`, importé depuis le client généré). Attrape-la pour répondre `404`. Enfin, fais une faute de frappe sur un nom de champ et note le message de compilation.
+</Exercice>
+
+</Exercices>

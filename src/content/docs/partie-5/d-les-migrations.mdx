@@ -1,0 +1,149 @@
+---
+title: "d · Les migrations"
+description: "Faire évoluer le schéma de la base de façon contrôlée, versionnée et réversible."
+projet: loup-garou
+duree: 60
+prerequis: Section c (les relations).
+exercices: 3
+sidebar:
+  order: 4
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Depuis la section a, `synchronize: true` garde tes tables alignées sur tes entités, sans que tu aies rien à faire. C'est confortable, et c'est exactement le problème : TypeORM applique **toute différence** qu'il trouve, à chaque démarrage, sans rien te demander. Avec une base qui contient de vraies données, c'est un vrai risque. Retire une propriété d'une entité, et au démarrage suivant la colonne **et ses données** disparaissent, sans un mot. Un changement de type peut faire de même : dans nos essais, les valeurs d'une colonne passée de texte à nombre sont devenues `null`. Une simple erreur de frappe pourrait donc faire la même chose en production. Une **migration** remplace ce fonctionnement automatique : c'est un fichier, versionné avec ton code, qui décrit un changement précis du schéma, avec de quoi l'annuler. Tu le relis avant de l'appliquer, ton équipe aussi, et il s'exécute une seule fois.
+
+## Préparer la CLI
+
+La CLI de TypeORM a besoin de savoir comment se connecter à la base, en dehors de NestJS. Crée `src/data-source.ts` :
+
+```ts title="src/data-source.ts"
+import { DataSource } from 'typeorm';
+
+process.loadEnvFile();
+
+export default new DataSource({
+	type: 'postgres',
+	host: process.env.DB_HOST,
+	port: Number(process.env.DB_PORT),
+	username: process.env.DB_USER,
+	password: process.env.DB_PASSWORD,
+	database: process.env.DB_NAME,
+	entities: ['dist/**/*.entity.js'],
+	migrations: ['dist/migrations/*.js'],
+});
+```
+
+`process.loadEnvFile()` charge ton `.env` (il est fourni par Node à partir de la version 20.12, donc par toute version LTS récente). Remarque les chemins : `dist/…`. La CLI lit le JavaScript **compilé**, pas le TypeScript — il faut donc construire le projet avant chaque commande. Autant l'automatiser, avec quatre scripts dans `package.json` :
+
+```json title="package.json" {3-6}
+{
+	"scripts": {
+		"migration:generate": "nest build && typeorm migration:generate -d dist/data-source.js",
+		"migration:run": "nest build && typeorm migration:run -d dist/data-source.js",
+		"migration:revert": "nest build && typeorm migration:revert -d dist/data-source.js",
+		"migration:show": "nest build && typeorm migration:show -d dist/data-source.js"
+	}
+}
+```
+
+Ajoute-les à l'objet `scripts` existant, sans le remplacer. Puis coupe la synchronisation automatique, dans `AppModule` :
+
+```ts title="src/app.module.ts"
+synchronize: false,
+```
+
+## La première migration
+
+Repars d'une base vide, pour que TypeORM ait tout à créer : `docker compose down -v` supprime le conteneur **et son volume** (donc toutes les données), puis `docker compose up -d` relance une base neuve (avec Podman : `podman compose down -v`, puis `podman compose up -d`). Demande alors à TypeORM de comparer tes entités à la base, et d'écrire la migration qui comble la différence :
+
+```bash
+npm run migration:generate -- src/migrations/CreerTables
+```
+
+Le `--` sépare les arguments de `npm` de ceux du script : ici, le chemin et le nom de la migration. Un fichier apparaît, préfixé d'un horodatage pour garder l'ordre :
+
+```ts title="src/migrations/1790261259344-CreerTables.ts"
+import { MigrationInterface, QueryRunner } from "typeorm";
+
+export class CreerTables1790261259344 implements MigrationInterface {
+    name = 'CreerTables1790261259344'
+
+    public async up(queryRunner: QueryRunner): Promise<void> {
+        await queryRunner.query(`CREATE TABLE "utilisateurs" ("id" SERIAL NOT NULL, "pseudo" character varying NOT NULL, CONSTRAINT "PK_…" PRIMARY KEY ("id"))`);
+        // … les autres tables, puis les clés étrangères
+    }
+
+    public async down(queryRunner: QueryRunner): Promise<void> {
+        await queryRunner.query(`DROP TABLE "utilisateurs"`);
+        // … dans l'ordre inverse
+    }
+}
+```
+
+`up` applique le changement, `down` le défait. Ce sont des requêtes SQL brutes : lis-les, c'est tout l'intérêt. Applique la migration :
+
+```bash
+npm run migration:run
+```
+
+Les tables existent maintenant, plus une table `migrations` : TypeORM y note quelles migrations ont déjà été exécutées, pour ne jamais rejouer la même deux fois. Relance le serveur : il démarre comme avant, mais c'est désormais la migration qui a créé le schéma.
+
+Une conséquence à connaître : si tu oublies `migration:run` sur une base vide, le serveur démarre **sans se plaindre** — et la première requête échoue avec `relation "utilisateurs" does not exist`. Sans `synchronize`, personne ne crée les tables à ta place.
+
+## Faire évoluer le schéma
+
+Un village a une phase — jour ou nuit. Ajoute-la à l'entité :
+
+```ts title="src/villages/village.entity.ts"
+	@Column({ default: 'jour' })
+	phase: string;
+```
+
+Génère la migration, avec un nom qui dit ce qu'elle fait :
+
+```bash
+npm run migration:generate -- src/migrations/AjouterPhaseAuVillage
+```
+
+Elle ne contient que la différence, et pas un octet de plus :
+
+```ts
+await queryRunner.query(`ALTER TABLE "villages" ADD "phase" character varying NOT NULL DEFAULT 'jour'`);
+```
+
+Comme la colonne a un `default`, les villages déjà présents en base reçoivent `'jour'` : aucune ligne n'est perdue, et aucune n'est laissée sans valeur. Sans `default`, la migration échouerait : la base refuse d'ajouter une colonne obligatoire à une table qui contient déjà des lignes, avec `column "phase" of relation "villages" contains null values`. Applique-la avec `npm run migration:run`.
+
+Relance `migration:generate` sans avoir rien changé, et TypeORM refuse de créer un fichier vide : `No changes in database schema were found - cannot generate a migration.`
+
+## Annuler, et voir où on en est
+
+```bash
+npm run migration:revert   # annule la dernière migration exécutée (elle exécute son `down`)
+npm run migration:show     # liste les migrations : [X] appliquée, [ ] pas encore
+```
+
+Après un `revert`, la colonne `phase` a disparu de la table mais les villages sont intacts, et `migration:show` affiche `[ ] AjouterPhaseAuVillage`. Un nouveau `migration:run` la remet.
+
+Trois règles pour travailler avec elles :
+
+1. **Une migration déjà appliquée ne se modifie jamais.** Pour corriger, on écrit une nouvelle migration. Sinon, ta base et celle de tes collègues ne racontent plus la même histoire.
+2. **Les migrations se commitent avec le code.** Ce sont elles qui permettent de recréer la base de zéro, sur une autre machine ou en production.
+3. **En production, seule `migration:run` s'exécute** — jamais `synchronize`. On y revient en partie 10.
+
+<Exercices partie={5} de={14} a={16}>
+
+<Exercice numero="5.14" titre="Passer aux migrations">
+Sur ta marketplace : désactive `synchronize`, écris `src/data-source.ts`, ajoute les quatre scripts `migration:*`. Repars d'une base vide (`docker compose down -v`, puis `up -d`), génère une première migration `CreerTables` qui crée les cinq tables, et exécute-la. Vérifie avec `\dt` que les tables et la table `migrations` existent, et que le serveur redémarre normalement.
+</Exercice>
+
+<Exercice numero="5.15" titre="Ajouter une colonne, sans rien perdre">
+Crée quelques produits. Ajoute à `Produit` une colonne `actif` (booléen, `default: true`), génère la migration correspondante, lis le SQL qu'elle contient, puis exécute-la. Vérifie que les produits déjà créés sont tous `actif`. Puis relance `migration:generate` sans rien changer : note le message.
+</Exercice>
+
+<Exercice numero="5.16" titre="Annuler, puis rejouer">
+Annule ta migration avec `migration:revert` : la colonne `actif` doit disparaître, les produits rester. Consulte `migration:show`, puis rejoue la migration. Enfin, observe le danger dont parle cette section, sur des données jetables : remets `synchronize: true`, retire la propriété `actif` de `Produit`, relance le serveur, et constate avec `\d produits` que la colonne a disparu — sans migration et sans avertissement. Remets la propriété, relance encore (la colonne revient, avec sa valeur par défaut), puis repasse `synchronize` à `false`.
+</Exercice>
+
+</Exercices>

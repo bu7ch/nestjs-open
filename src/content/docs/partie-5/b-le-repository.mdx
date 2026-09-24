@@ -1,0 +1,123 @@
+---
+title: "b · Le repository"
+description: "Créer, lire, modifier et supprimer des lignes, avec le repository de TypeORM."
+projet: loup-garou
+duree: 55
+prerequis: Section a (PostgreSQL et TypeORM).
+exercices: 4
+sidebar:
+  order: 2
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Le repository d'une entité offre tout ce qu'il faut pour lire et écrire ses lignes. Toutes ses méthodes sont **asynchrones** : elles parlent à la base, ce qui prend du temps, donc elles renvoient une promesse — la partie 1, section b, te sert à nouveau.
+
+Ajoute d'abord un DTO pour créer un utilisateur (partie 4 : `@IsString()` et `@IsNotEmpty()`), puis complète le service :
+
+```ts title="src/utilisateurs/utilisateurs.service.ts" {16,22,23,28,29,33}
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Utilisateur } from './utilisateur.entity.js';
+import { CreerUtilisateurDto } from './dto/creer-utilisateur.dto.js';
+
+@Injectable()
+export class UtilisateursService {
+	constructor(@InjectRepository(Utilisateur) private readonly utilisateurs: Repository<Utilisateur>) {}
+
+	trouverTous() {
+		return this.utilisateurs.find();
+	}
+
+	async trouverUn(id: number) {
+		const utilisateur = await this.utilisateurs.findOneBy({ id });
+		if (!utilisateur) throw new NotFoundException(`Utilisateur ${id} introuvable`);
+		return utilisateur;
+	}
+
+	creer(dto: CreerUtilisateurDto) {
+		const utilisateur = this.utilisateurs.create(dto);
+		return this.utilisateurs.save(utilisateur);
+	}
+
+	async modifierPseudo(id: number, pseudo: string) {
+		const utilisateur = await this.trouverUn(id);
+		utilisateur.pseudo = pseudo;
+		return this.utilisateurs.save(utilisateur);
+	}
+
+	async supprimer(id: number) {
+		const resultat = await this.utilisateurs.delete(id);
+		if (resultat.affected === 0) throw new NotFoundException(`Utilisateur ${id} introuvable`);
+	}
+}
+```
+
+Chaque méthode surlignée mérite un mot :
+
+- `findOneBy({ id })` renvoie la ligne, ou `null` si elle n'existe pas — c'est à toi de transformer ce `null` en `404`, comme avec le tableau en mémoire de la partie 3.
+- `create(dto)` fabrique une instance de l'entité **sans** toucher à la base. `save(...)` l'écrit, et te la rend avec son `id` tout juste attribué.
+- Appelé sur une instance qui a déjà un `id`, `save` ne crée pas une nouvelle ligne : il **met à jour** la ligne existante. C'est ce que fait `modifierPseudo`.
+- `delete(id)` renvoie un objet dont `affected` compte les lignes supprimées : `0` veut dire qu'aucune n'avait cet `id`.
+
+Le controller n'apporte rien de neuf par rapport à la partie 3 : `@Get(':id')`, `@Post()`, `@Patch(':id')` et `@Delete(':id')` appellent ces méthodes, avec `ParseIntPipe` sur l'`id`. Pour `DELETE`, ajoute `@HttpCode(204)` : « supprimé, rien à renvoyer ».
+
+```ts title="src/utilisateurs/utilisateurs.controller.ts"
+@Delete(':id')
+@HttpCode(204)
+async supprimer(@Param('id', ParseIntPipe) id: number) {
+	await this.utilisateursService.supprimer(id);
+}
+```
+
+Remarque ce que **ne change pas** ce passage à la base : le controller n'a pas bougé. `trouverTous()` renvoie maintenant une promesse au lieu d'un tableau, et NestJS l'attend tout seul avant de répondre. C'est l'intérêt de la séparation controller/service de la partie 3 : seul le service sait d'où viennent les données.
+
+## Filtrer, trier, limiter
+
+`find` accepte des options pour ne récupérer que ce dont tu as besoin :
+
+```ts
+this.utilisateurs.find({
+	where: { pseudo: 'LouveGrise' },
+	order: { id: 'ASC' },
+	take: 10,
+});
+```
+
+`where` filtre, `order` trie, `take` limite le nombre de lignes (le `limite` du `DefaultValuePipe` de la partie 4, section c, y trouve enfin sa place). Et pour ne lire que certaines colonnes, `select: { pseudo: true }`.
+
+## Les colonnes ont des options
+
+`@Column()` accepte un objet d'options. Tu as déjà croisé le cas simple ; en voici deux autres :
+
+```ts
+@Column({ default: true })
+vivant: boolean;
+
+@Column({ type: 'numeric', precision: 10, scale: 2 })
+prix: number;
+```
+
+`default` donne une valeur aux lignes créées sans elle. `type: 'numeric'` demande un décimal exact, avec `precision` chiffres au total dont `scale` après la virgule — le bon type pour de l'argent, à la différence d'un nombre à virgule flottante qui arrondit. Une surprise t'attend : PostgreSQL renvoie ce type sous forme de **chaîne** (`"129.90"`), pas de nombre, pour ne jamais perdre en précision. Ce n'est pas un bug.
+
+<Exercices partie={5} de={5} a={8}>
+
+<Exercice numero="5.5" titre="Un vendeur par son identifiant">
+Ajoute `GET /api/vendeurs/:id`, avec `findOneBy` et `ParseIntPipe`. Renvoie une `NotFoundException` si le vendeur n'existe pas. Vérifie qu'un identifiant inconnu donne un `404`, et qu'un identifiant qui n'est pas un nombre donne un `400`.
+</Exercice>
+
+<Exercice numero="5.6" titre="Renommer un vendeur">
+Ajoute `PATCH /api/vendeurs/:id`, qui change le `nom` : retrouve le vendeur (avec un `404` s'il n'existe pas), modifie sa propriété, puis appelle `save`. Vérifie avec un `GET` que le nouveau nom est bien en base.
+</Exercice>
+
+<Exercice numero="5.7" titre="Supprimer un vendeur">
+Ajoute `DELETE /api/vendeurs/:id` avec `@HttpCode(204)`, en t'appuyant sur `affected` pour renvoyer un `404` si rien n'a été supprimé. Vérifie qu'un deuxième `DELETE` sur le même `id` donne bien un `404`.
+</Exercice>
+
+<Exercice numero="5.8" titre="Les produits quittent la mémoire">
+Crée l'entité `Produit` (`id`, `nom`, `prix` en `numeric`, `categorie`) et remplace le tableau en mémoire de `ProduitsService` par son repository. **Toutes** les routes des parties 3 et 4 doivent continuer à fonctionner : la liste avec `?limite=` (`take`), `GET /api/produits/:id`, `GET /api/produits/categorie/:categorie` (`where`), la liste des catégories sans doublon (exercice 3.11 : `find` avec `select`, puis `Set`), et la création validée avec sa limite `NOMBRE_MAX_PRODUITS` (indice : `count()`). Retire `variantes` du DTO : elles reviendront en 5.11, sous la forme d'une vraie table. Vérifie que `prix` revient sous forme de chaîne, et note pourquoi.
+</Exercice>
+
+</Exercices>

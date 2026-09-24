@@ -1,0 +1,189 @@
+---
+title: "g · Aller plus loin : GraphQL"
+description: "Une autre façon d'exposer ton API : une seule URL, et un client qui choisit les champs."
+duree: 60
+prerequis: Section c (les relations). Section bonus, non nécessaire pour la suite du cours.
+exercices: 3
+sidebar:
+  order: 7
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Avec REST, chaque route renvoie une réponse de forme fixe : `GET /api/villages/1` donne toujours les mêmes champs, que le client en ait besoin ou non, et pour avoir les participations d'un village il faut parfois une seconde requête. **GraphQL** renverse la logique : il n'y a qu'**une seule URL**, et c'est le client qui décrit, dans sa requête, **exactement les champs** qu'il veut. Cette section ajoute une API GraphQL au Loup-Garou de la section c, à côté de l'API REST.
+
+```bash
+npm install @nestjs/graphql @nestjs/apollo @apollo/server graphql @as-integrations/express5
+```
+
+`@as-integrations/express5` relie Apollo (le serveur GraphQL) à Express, sur lequel tourne NestJS. Sans lui, le serveur refuse de démarrer et te dit que le paquet est manquant. On active le module dans `AppModule`, en mode **code-first** : tu écris des classes, et NestJS en **déduit** le schéma GraphQL.
+
+```ts title="src/app.module.ts" {1,2,7}
+import { GraphQLModule } from '@nestjs/graphql';
+import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
+
+@Module({
+	imports: [
+		// … ConfigModule, TypeOrmModule et tes autres modules
+		GraphQLModule.forRoot<ApolloDriverConfig>({ driver: ApolloDriver, autoSchemaFile: true }),
+	],
+})
+export class AppModule {}
+```
+
+## Décrire ce qu'on peut demander
+
+Les types du schéma sont des classes décorées — encore le principe de la partie 1. `@ObjectType` déclare un type, `@Field` chacun de ses champs :
+
+```ts title="src/graphql/village.type.ts"
+import { Field, ID, ObjectType } from '@nestjs/graphql';
+
+@ObjectType('Utilisateur')
+export class UtilisateurType {
+	@Field(() => ID)
+	id: number;
+
+	@Field()
+	pseudo: string;
+}
+
+@ObjectType('Participation')
+export class ParticipationType {
+	@Field(() => ID)
+	id: number;
+
+	@Field()
+	role: string;
+
+	@Field()
+	vivant: boolean;
+
+	@Field(() => UtilisateurType)
+	utilisateur: UtilisateurType;
+}
+
+@ObjectType('Village')
+export class VillageType {
+	@Field(() => ID)
+	id: number;
+
+	@Field()
+	nom: string;
+
+	@Field(() => [ParticipationType])
+	participations: ParticipationType[];
+}
+```
+
+Ces classes décrivent la **forme de l'API**, pas les tables : ce sont des types distincts des entités TypeORM, même s'ils leur ressemblent. Pour ce qu'un client peut **envoyer**, on écrit un `@InputType` — et les décorateurs de `class-validator` de la partie 4 y fonctionnent :
+
+```ts title="src/graphql/creer-village.input.ts"
+import { Field, InputType } from '@nestjs/graphql';
+import { IsNotEmpty, IsString } from 'class-validator';
+
+@InputType()
+export class CreerVillageInput {
+	@Field()
+	@IsString()
+	@IsNotEmpty()
+	nom: string;
+}
+```
+
+## Le resolver
+
+Un **resolver** est l'équivalent GraphQL d'un controller : ses méthodes répondent aux questions du client. Il reçoit ses dépendances par le constructeur, comme tout provider, et réutilise le service de la section c tel quel — la logique métier ne change pas :
+
+```ts title="src/graphql/villages.resolver.ts" {7,11,12,16,17}
+import { Args, ID, Mutation, Query, Resolver } from '@nestjs/graphql';
+import { ParseIntPipe } from '@nestjs/common';
+import { VillagesService } from '../villages/villages.service.js';
+import { VillageType } from './village.type.js';
+import { CreerVillageInput } from './creer-village.input.js';
+
+@Resolver(() => VillageType)
+export class VillagesResolver {
+	constructor(private readonly villagesService: VillagesService) {}
+
+	@Query(() => VillageType)
+	village(@Args('id', { type: () => ID }, ParseIntPipe) id: number) {
+		return this.villagesService.trouverUn(id);
+	}
+
+	@Mutation(() => VillageType)
+	async creerVillage(@Args('entree') entree: CreerVillageInput) {
+		const village = await this.villagesService.creer(entree.nom);
+		return { ...village, participations: [] };
+	}
+}
+```
+
+Une `@Query` **lit**, une `@Mutation` **modifie** : c'est la distinction GraphQL entre `GET` et `POST`/`PATCH`/`DELETE`. `@Args` remplace `@Param` et `@Body`, et accepte les mêmes pipes — `ParseIntPipe` est de retour. Le `participations: []` de la mutation est là parce que `participations` est obligatoire dans `VillageType`, alors que `creer` ne charge aucune relation.
+
+Le resolver se déclare dans un module, comme un provider. Ce module importe `VillagesModule`, qui doit donc **exporter** `VillagesService` :
+
+```ts title="src/graphql/graphql-api.module.ts"
+@Module({
+	imports: [VillagesModule],
+	providers: [VillagesResolver],
+})
+export class GraphqlApiModule {}
+```
+
+## Interroger l'API
+
+Ouvre `http://localhost:3000/graphql` dans un navigateur : une page d'exploration (GraphiQL) te permet d'écrire et d'envoyer des requêtes. Avec `curl`, une requête est un `POST` dont le corps JSON contient la clé `query` :
+
+```bash
+curl localhost:3000/graphql -H 'Content-Type: application/json' \
+  -d '{"query":"{ village(id: 1) { nom participations { role utilisateur { pseudo } } } }"}'
+```
+
+```json
+{"data":{"village":{"nom":"Lune Rousse","participations":[{"role":"loup-garou","utilisateur":{"pseudo":"LouveGrise"}}, …]}}}
+```
+
+Le client a demandé le nom du village, le rôle de chaque participation et le pseudo de chaque joueur : il a reçu **exactement** cela, rien de plus. Avec `{ village(id: 1) { nom } }`, il n'aurait reçu que `{"data":{"village":{"nom":"Lune Rousse"}}}`. C'est le même resolver, la même base : seule la requête change.
+
+Une mutation s'écrit avec le mot-clé `mutation`, et ses arguments entre parenthèses :
+
+```graphql
+mutation {
+  creerVillage(entree: { nom: "Bois-Dormant" }) { id nom }
+}
+```
+
+## Les erreurs
+
+Le schéma est **typé**, et le serveur le fait respecter. Demande un champ qui n'existe pas, et la réponse contient `Cannot query field "salaire" on type "Village".` Envoie un `nom` vide, et le `ValidationPipe` de la partie 4 — celui que tu as activé globalement — refuse la requête : l'erreur porte le code `BAD_REQUEST`. Les erreurs n'ont pas de statut HTTP à lire : elles sont listées dans un tableau `errors`, dans le corps de la réponse.
+
+Un piège : avec `whitelist` et `forbidNonWhitelisted` activés, **chaque champ d'un `@InputType` doit porter au moins un décorateur de `class-validator`**. Un champ qui n'a que `@Field()` est traité comme un champ en trop, et la requête entière échoue avec une `Bad Request Exception`. Pour un champ facultatif, `@IsOptional()` suffit.
+
+## REST ou GraphQL ?
+
+| | REST | GraphQL |
+|---|---|---|
+| Points d'entrée | une URL par ressource (`GET /api/villages/1`) | une seule (`/graphql`) |
+| La forme de la réponse | fixée par le serveur, pour chaque route | choisie par le client, champ par champ |
+| Lire ou modifier | le verbe HTTP (`GET`, `POST`, `DELETE`…) | `query` ou `mutation` |
+| Les erreurs | le code HTTP (`404`, `409`…) | un tableau `errors` dans la réponse |
+| Décrire l'API | à documenter (Swagger, partie 9) | un schéma typé, explorable dans le navigateur |
+
+GraphQL brille quand plusieurs clients — un site, une application mobile — n'ont pas besoin des mêmes champs. REST reste plus simple à démarrer, et c'est celui que suit le reste du cours.
+
+<Exercices partie={5} de={22} a={24}>
+
+<Exercice numero="5.22" titre="Une API GraphQL pour la marketplace">
+Installe les paquets, active `GraphQLModule` en code-first, et écris les types `Vendeur` et `Produit` (`@ObjectType`). Ajoute un resolver avec une query `vendeurs`, qui renvoie tous les vendeurs, en réutilisant ton service TypeORM. Interroge-la avec `curl`, puis ouvre GraphiQL dans le navigateur.
+</Exercice>
+
+<Exercice numero="5.23" titre="Choisir ses champs">
+Ajoute une query `vendeur(id)` avec `ParseIntPipe`, qui renvoie un vendeur et ses produits (relation chargée par ton service, section c). Compare les réponses quand tu demandes seulement `nom`, puis `nom` et les produits. Demande un champ inexistant, et note le message d'erreur.
+</Exercice>
+
+<Exercice numero="5.24" titre="Une mutation validée">
+Ajoute une mutation `creerVendeur(entree)`, avec un `@InputType` dont le `nom` est validé (`@IsString() @IsNotEmpty()`). Vérifie qu'un nom valide crée le vendeur, et qu'un nom vide est refusé avec le code `BAD_REQUEST`. Ajoute un second champ facultatif à l'`@InputType`, sans décorateur `class-validator` : constate l'échec, puis corrige-le avec `@IsOptional()`.
+</Exercice>
+
+</Exercices>
