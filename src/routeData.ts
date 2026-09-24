@@ -1,16 +1,41 @@
-// Ajoute le bloc d'exercices d'une leçon au sommaire « Sur cette page ».
-// Le titre (« Exercices 8.5 à 8.7 ») est rendu par un composant, donc absent des
-// titres Markdown que Starlight utilise : on le retrouve dans la source MDX.
+// Middleware de route Starlight, exécuté au rendu de chaque page :
+// 1. garde-fou : vérifie la cohérence des exercices (frontmatter, numéros) et fait
+//    échouer le build en cas d'erreur (en dev, l'erreur s'affiche dans la page) ;
+// 2. ajoute le bloc d'exercices au sommaire « Sur cette page ». Son titre
+//    (« Exercices 8.5 à 8.7 ») est rendu par un composant, donc absent des titres
+//    Markdown utilisés par Starlight : on le retrouve dans la source MDX.
+import { getCollection } from 'astro:content';
 import { defineRouteMiddleware } from '@astrojs/starlight/route-data';
+import { verifierDoublons, verifierPage } from './verifierExercices';
 
 const BLOC = /<Exercices\b([^>]*)>/g;
 const attribut = (attrs: string, nom: string) =>
 	Number(new RegExp(`\\b${nom}=\\{(\\d+)\\}`).exec(attrs)?.[1]);
 
-export const onRequest = defineRouteMiddleware((context) => {
+// Doublons entre pages : calculé une fois pour tout le site.
+let doublons: Promise<string[]> | undefined;
+const doublonsDuSite = () =>
+	(doublons ??= getCollection('docs').then((pages) =>
+		verifierDoublons(pages.map((p) => ({ id: p.id, body: p.body ?? '', exercices: p.data.exercices }))),
+	));
+
+export const onRequest = defineRouteMiddleware(async (context) => {
 	const { toc, entry } = context.locals.starlightRoute;
-	if (!toc || !entry.body) return;
-	for (const [, attrs] of entry.body.matchAll(BLOC)) {
+	const body = entry.body ?? '';
+
+	const erreurs = [
+		...verifierPage({ id: entry.id, body, exercices: entry.data.exercices }),
+		...(await doublonsDuSite()).filter((e) => e.includes(`dans ${entry.id} `) || e.endsWith(`dans ${entry.id}.`)),
+	];
+	if (erreurs.length > 0) {
+		throw new Error(
+			`Exercices incohérents dans src/content/docs/${entry.id} :\n` +
+				erreurs.map((e) => `  - ${e}`).join('\n'),
+		);
+	}
+
+	if (!toc) return;
+	for (const [, attrs] of body.matchAll(BLOC)) {
 		const partie = attribut(attrs ?? '', 'partie');
 		const de = attribut(attrs ?? '', 'de');
 		const a = attribut(attrs ?? '', 'a');
