@@ -85,17 +85,19 @@ const partieEnCours = { ...optionsParDefaut, tour: 3 };
 
 Enfin, ton code sera réparti en plusieurs fichiers, reliés par `import` et `export` :
 
-```js title="villages.js"
+```js title="villages.mjs"
 export function creerVillage(nom) {
 	return { nom, joueurs: [] };
 }
 ```
 
-```js title="main.js"
-import { creerVillage } from './villages.js';
+```js title="main.mjs"
+import { creerVillage } from './villages.mjs';
 
 const village = creerVillage('Lune Rousse');
 ```
+
+L'extension `.mjs` dit explicitement à Node que ce fichier utilise `import`/`export` — avec une simple extension `.js`, tu obtiendrais l'erreur `Cannot use import statement outside a module`.
 
 <Exercices partie={1} de={1} a={3}>
 
@@ -112,7 +114,7 @@ function decrire(joueur) {
 </Exercice>
 
 <Exercice numero="1.2" titre="Un petit module">
-Crée deux fichiers. Dans `village.js`, exporte une fonction `ajouterJoueur(village, pseudo)` qui renvoie un **nouveau** village avec le joueur ajouté, sans modifier l'original (utilise le spread sur le tableau `joueurs`). Dans `main.js`, importe cette fonction et vérifie avec `console.log` que le village d'origine n'a pas changé.
+Crée deux fichiers `.mjs`. Dans `village.mjs`, exporte une fonction `ajouterJoueur(village, pseudo)` qui renvoie un **nouveau** village avec le joueur ajouté, sans modifier l'original (utilise le spread sur le tableau `joueurs`). Dans `main.mjs`, importe cette fonction et vérifie avec `console.log` que le village d'origine n'a pas changé.
 </Exercice>
 
 <Exercice numero="1.3" titre="Rest et paramètre par défaut">
