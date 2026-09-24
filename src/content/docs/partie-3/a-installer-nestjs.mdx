@@ -1,0 +1,113 @@
+---
+title: "a · Installer NestJS"
+description: "La CLI NestJS, le projet généré, et le rôle de chaque fichier."
+duree: 35
+prerequis: "Partie 2 terminée : module http, npm, Express, middlewares."
+exercices: 3
+sidebar:
+  order: 1
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+**NestJS** est un framework backend écrit en TypeScript, construit sur Express par défaut — tout ce que tu as appris en partie 2 tourne encore en dessous. Sa CLI génère un projet complet, avec une organisation imposée : c'est justement cette structure qui va rendre ton code plus facile à faire grandir qu'avec Express seul.
+
+## Créer un projet
+
+```bash
+npx @nestjs/cli new nom-du-projet
+```
+
+La CLI demande quel gestionnaire de paquets utiliser : choisis `npm`. Une fois l'installation terminée :
+
+```bash
+cd nom-du-projet
+npm run start:dev
+```
+
+Visite `http://localhost:3000` : tu devrais voir `Hello World!`. `start:dev` relance le serveur à chaque modification, comme `node --watch` en partie 2 — sauf que la CLI NestJS s'en charge elle-même.
+
+## Le projet généré
+
+```
+src/
+  main.ts            point d'entrée : démarre le serveur
+  app.module.ts       module racine
+  app.controller.ts   la route « Hello World! »
+  app.service.ts       la logique derrière cette route
+```
+
+```ts title="src/main.ts"
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module.js';
+
+async function bootstrap() {
+	const app = await NestFactory.create(AppModule);
+	await app.listen(process.env.PORT ?? 3000);
+}
+await bootstrap();
+```
+
+`NestFactory.create(AppModule)` construit ton application à partir du **module racine**, `AppModule` — le point de départ de tout ce que NestJS doit charger.
+
+```ts title="src/app.module.ts"
+import { Module } from '@nestjs/common';
+import { AppController } from './app.controller.js';
+import { AppService } from './app.service.js';
+
+@Module({
+	imports: [],
+	controllers: [AppController],
+	providers: [AppService],
+})
+export class AppModule {}
+```
+
+Tu remarques les imports en `.js`, alors que les fichiers sont en `.ts` : c'est la convention de résolution de modules que NestJS utilise par défaut (`nodenext`) — imite-la, tu n'as pas besoin de la comprendre en détail pour l'instant.
+
+```ts title="src/app.controller.ts"
+import { Controller, Get } from '@nestjs/common';
+import { AppService } from './app.service.js';
+
+@Controller()
+export class AppController {
+	constructor(private readonly appService: AppService) {}
+
+	@Get()
+	getHello(): string {
+		return this.appService.getHello();
+	}
+}
+```
+
+```ts title="src/app.service.ts"
+import { Injectable } from '@nestjs/common';
+
+@Injectable()
+export class AppService {
+	getHello(): string {
+		return 'Hello World!';
+	}
+}
+```
+
+Reconnais le raccourci de constructeur (`private readonly appService: AppService`) de la partie 1, et le décorateur `@Injectable()` que tu y as toi-même écrit en partie 1 section d — ici appliqué pour de vrai. Les sections b, c et d de cette partie détaillent chacun de ces trois fichiers.
+
+Un dernier détail, déjà réglé pour toi : ouvre `tsconfig.json`, tu y trouveras `"experimentalDecorators": true` et `"emitDecoratorMetadata": true` — exactement ce dont je parlais en partie 1 section d.
+
+<Exercices partie={3} de={1} a={3}>
+
+<Exercice numero="3.1" titre="Installer et lancer">
+Crée un projet NestJS, lance-le avec `npm run start:dev`, et vérifie avec `curl http://localhost:3000` que tu obtiens `Hello World!`.
+</Exercice>
+
+<Exercice numero="3.2" titre="Modifier la route existante">
+Pendant que `start:dev` tourne, modifie le message renvoyé par `AppService.getHello()`. Enregistre, puis relance ta requête `curl` sans redémarrer le serveur toi-même : le nouveau message doit apparaître.
+</Exercice>
+
+<Exercice numero="3.3" titre="Changer de port">
+`app.listen(process.env.PORT ?? 3000)` utilise la variable d'environnement `PORT` si elle existe, sinon `3000`. Relance ton serveur avec `PORT=4000 npm run start:dev`, et vérifie qu'il répond bien sur `http://localhost:4000` — et plus sur `3000`.
+</Exercice>
+
+</Exercices>

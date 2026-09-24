@@ -1,0 +1,125 @@
+---
+title: "d · L'injection de dépendances"
+description: "Sortir la logique du controller avec un service, et l'injecter avec le constructeur."
+projet: loup-garou
+duree: 45
+prerequis: Section c (les modules).
+exercices: 4
+sidebar:
+  order: 4
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Jusqu'ici, `VillagesController` fait tout : il garde les données *et* répond aux requêtes. Un **service** sépare les deux : la logique (et les données) vivent dans une classe `@Injectable()`, que le controller reçoit toute prête par son constructeur.
+
+```ts title="src/villages/villages.service.ts"
+import { Injectable, NotFoundException } from '@nestjs/common';
+
+interface Village {
+	id: string;
+	nom: string;
+}
+
+@Injectable()
+export class VillagesService {
+	private villages: Village[] = [
+		{ id: '1', nom: 'Lune Rousse' },
+		{ id: '2', nom: 'Bois-Dormant' },
+	];
+
+	trouverTous(): Village[] {
+		return this.villages;
+	}
+
+	trouverUn(id: string): Village {
+		const village = this.villages.find((v) => v.id === id);
+		if (!village) throw new NotFoundException('Village introuvable');
+		return village;
+	}
+}
+```
+
+```ts title="src/villages/villages.controller.ts" {4,5}
+import { Controller, Get, Param } from '@nestjs/common';
+import { VillagesService } from './villages.service.js';
+
+@Controller('api/villages')
+export class VillagesController {
+	constructor(private readonly villagesService: VillagesService) {}
+
+	@Get()
+	trouverTous() {
+		return this.villagesService.trouverTous();
+	}
+
+	@Get(':id')
+	trouverUn(@Param('id') id: string) {
+		return this.villagesService.trouverUn(id);
+	}
+}
+```
+
+C'est le même raccourci de constructeur qu'en partie 1 : `private readonly villagesService: VillagesService` déclare la propriété *et* l'assigne. Mais qui appelle `new VillagesController(new VillagesService())` ? Personne — c'est NestJS. C'est ça, l'**injection de dépendances** : tu déclares ce dont ta classe a besoin, dans son constructeur, et le framework se charge de le construire et de le fournir. Enregistre le service dans les `providers` de `VillagesModule` :
+
+```ts title="src/villages/villages.module.ts" {2,6}
+import { Module } from '@nestjs/common';
+import { VillagesService } from './villages.service.js';
+import { VillagesController } from './villages.controller.js';
+
+@Module({
+	controllers: [VillagesController],
+	providers: [VillagesService],
+})
+export class VillagesModule {}
+```
+
+Par défaut, NestJS ne crée **qu'une seule instance** d'un service pour toute l'application (on dit qu'il est *singleton*) : son état survit d'une requête à l'autre. Un `push` dans `this.villages` lors d'une requête sera donc visible à la requête suivante.
+
+## Un service peut en injecter un autre
+
+Un service s'injecte exactement comme dans un controller — par le constructeur. Mais s'il vit dans un *autre* module, ce module doit l'**exporter**, et le tien doit l'**importer** :
+
+```ts title="src/categories/categories.module.ts" {2,6}
+import { Module } from '@nestjs/common';
+import { VillagesModule } from '../villages/villages.module.js';
+
+@Module({
+	imports: [VillagesModule], // pour accéder à un provider exporté par VillagesModule
+	controllers: [/* … */],
+	providers: [/* … */],
+})
+export class CategoriesModule {}
+```
+
+```ts title="src/villages/villages.module.ts" {7}
+@Module({
+	controllers: [VillagesController],
+	providers: [VillagesService],
+	exports: [VillagesService], // sinon, invisible en dehors de ce module
+})
+export class VillagesModule {}
+```
+
+Oublie l'un des deux, et NestJS refuse de démarrer : il te dira précisément quel provider il ne trouve pas, et dans quel module il le cherchait.
+
+<Exercices partie={3} de={9} a={12}>
+
+<Exercice numero="3.9" titre="Un service pour les produits">
+Génère `ProduitsService` (`npx nest g service produits`). Déplace le tableau et la logique de `ProduitsController` (section b) dedans, puis injecte le service dans le controller pour qu'il l'utilise. `GET /api/produits` et `GET /api/produits/:id` doivent continuer à fonctionner à l'identique.
+</Exercice>
+
+<Exercice numero="3.10" titre="Créer un produit, et vérifier la persistance">
+Ajoute une méthode `creer` au service, et une route `POST /api/produits` sur le controller qui l'appelle, avec un statut `201`. Crée un produit, puis vérifie avec `GET /api/produits` qu'il apparaît bien — la preuve que le service est resté le même entre les deux requêtes.
+</Exercice>
+
+<Exercice numero="3.11" titre="Un service qui en utilise un autre">
+Dans `ProduitsService`, ajoute une méthode `categories()` qui renvoie la liste des catégories présentes dans les produits, sans doublon (indice : `[...new Set(...)]`). Exporte `ProduitsService` depuis `ProduitsModule`. Fais en sorte que `CategoriesService` (exercice 3.8) l'injecte et l'utilise pour que `GET /api/categories` renvoie désormais cette liste calculée, plutôt que le tableau fixe du départ.
+</Exercice>
+
+<Exercice numero="3.12" titre="Casser l'injection, exprès">
+Retire temporairement `ProduitsService` des `exports` de `ProduitsModule` (laisse le reste inchangé), et relance le serveur. Note le message d'erreur exact que NestJS affiche au démarrage — il indique le service manquant et le module qui le cherchait. Remets l'export en place pour que l'application redémarre normalement.
+</Exercice>
+
+</Exercices>

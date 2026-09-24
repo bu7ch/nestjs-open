@@ -1,0 +1,52 @@
+---
+title: "c · Les modules"
+description: "Regrouper un domaine dans son propre module, plutôt que de tout entasser dans AppModule."
+projet: loup-garou
+duree: 30
+prerequis: Section b (ton premier controller).
+exercices: 2
+sidebar:
+  order: 3
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Tant que ton controller est directement déclaré dans `AppModule`, tout ton code fini par s'y entasser. Un **module par domaine** évite ça : `VillagesModule` regroupe tout ce qui concerne les villages, et `AppModule` se contente de l'importer.
+
+```ts title="src/villages/villages.module.ts"
+import { Module } from '@nestjs/common';
+import { VillagesController } from './villages.controller.js';
+
+@Module({
+	controllers: [VillagesController],
+	providers: [],
+})
+export class VillagesModule {}
+```
+
+```ts title="src/app.module.ts" {2,5}
+import { Module } from '@nestjs/common';
+import { VillagesModule } from './villages/villages.module.js';
+
+@Module({
+	imports: [VillagesModule],
+	controllers: [], // VillagesController n'y est plus : il vit dans VillagesModule
+	providers: [],
+})
+export class AppModule {}
+```
+
+`npx nest g module villages` crée ce fichier et l'ajoute aux `imports` d'`AppModule` — mais si `VillagesController` était déjà déclaré directement dans `AppModule` (comme en section b), la CLI ne l'en retire pas toute seule : c'est à toi de le faire, à la main.
+
+<Exercices partie={3} de={7} a={8}>
+
+<Exercice numero="3.7" titre="Regrouper produits dans son module">
+Génère `ProduitsModule` (`npx nest g module produits`). Retire `ProduitsController` des `controllers` d'`AppModule`, et ajoute-le à ceux de `ProduitsModule` à la place. Relance le serveur : `GET /api/produits` doit toujours répondre.
+</Exercice>
+
+<Exercice numero="3.8" titre="Un deuxième module">
+Crée `CategoriesModule`, avec son propre `CategoriesController`. Ajoute `GET /api/categories`, qui renvoie pour l'instant un tableau fixe de noms de catégories. Vérifie que `ProduitsModule` et `CategoriesModule` cohabitent bien dans les `imports` d'`AppModule`.
+</Exercice>
+
+</Exercices>

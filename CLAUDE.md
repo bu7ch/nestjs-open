@@ -11,7 +11,7 @@ Cours en ligne gratuit pour apprendre NestJS en partant de zéro, sur le modèle
   - dans les exercices : une **marketplace B2B** (vendeurs, catalogue, panier, commandes).
 - La partie 12 contient les versions complètes des deux projets (microservices, Kafka, Kubernetes…).
 - Ne jamais utiliser le nom « Thiercelieux » ni les illustrations du jeu commercial d'Asmodee : on parle du Loup-Garou traditionnel.
-- NestJS 11.
+- NestJS 12.
 
 ## Site
 

@@ -1,0 +1,86 @@
+---
+title: "b · Ton premier controller"
+description: "@Controller, @Get, @Param, @Query : router sans jamais appeler res.json()."
+projet: loup-garou
+duree: 40
+prerequis: Section a (installer NestJS).
+exercices: 3
+sidebar:
+  order: 2
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Un **controller** regroupe les routes d'un même domaine. `@Controller('api/villages')` fixe le préfixe commun à toutes ses routes ; chaque méthode devient une route grâce à un décorateur comme `@Get()`.
+
+```ts title="src/villages/villages.controller.ts"
+import { Controller, Get } from '@nestjs/common';
+
+interface Village {
+	id: string;
+	nom: string;
+}
+
+@Controller('api/villages')
+export class VillagesController {
+	private villages: Village[] = [
+		{ id: '1', nom: 'Lune Rousse' },
+		{ id: '2', nom: 'Bois-Dormant' },
+	];
+
+	@Get()
+	trouverTous(): Village[] {
+		return this.villages;
+	}
+}
+```
+
+Compare à Express, en partie 2 : pas de `res.json(...)`, pas d'en-tête à poser. Tu **retournes** une valeur, NestJS la sérialise en JSON tout seul. Ajoute ce controller aux `controllers` d'`AppModule` (ou génère-le directement avec `npx nest g controller villages`, qui s'en charge) pour qu'il soit pris en compte.
+
+## Un paramètre dans l'URL
+
+`@Param('id')` extrait un segment `:id` du chemin et l'injecte directement comme argument — plus besoin de lire `req.params` toi-même :
+
+```ts
+import { Controller, Get, NotFoundException, Param } from '@nestjs/common';
+
+@Get(':id')
+trouverUn(@Param('id') id: string): Village {
+	const village = this.villages.find((v) => v.id === id);
+	if (!village) throw new NotFoundException('Village introuvable');
+	return village;
+}
+```
+
+`NotFoundException` est une classe fournie par NestJS : la lancer avec `throw` suffit à renvoyer un statut `404`, avec un corps JSON `{ "message": "...", "statusCode": 404 }`. Pas de `res.status(404)` à écrire — NestJS a une classe équivalente pour chaque code d'erreur HTTP courant (`BadRequestException`, `ForbiddenException`…).
+
+## Une valeur dans la chaîne de requête
+
+`@Query('...')` fait la même chose pour `?cle=valeur` :
+
+```ts
+import { Query } from '@nestjs/common';
+
+@Get()
+trouverTous(@Query('tri') tri?: string): Village[] {
+	if (tri === 'nom') return [...this.villages].sort((a, b) => a.nom.localeCompare(b.nom));
+	return this.villages;
+}
+```
+
+<Exercices partie={3} de={4} a={6}>
+
+<Exercice numero="3.4" titre="Un controller produits">
+Génère `ProduitsController` (`npx nest g controller produits`), avec un tableau de produits en mémoire (`id`, `nom`, `categorie`). Ajoute `GET /api/produits`, qui renvoie tout le tableau.
+</Exercice>
+
+<Exercice numero="3.5" titre="Un produit précis">
+Ajoute `GET /api/produits/:id`, avec `@Param('id')`. Lance `NotFoundException` si aucun produit ne correspond.
+</Exercice>
+
+<Exercice numero="3.6" titre="Filtrer par catégorie">
+Ajoute le support de `?categorie=...` sur `GET /api/produits`, avec `@Query('categorie')` : si elle est fournie, ne renvoie que les produits de cette catégorie.
+</Exercice>
+
+</Exercices>
