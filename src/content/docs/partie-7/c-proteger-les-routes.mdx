@@ -1,0 +1,243 @@
+---
+title: "c · Protéger les routes"
+description: "Un guard qui vérifie le jeton sur toute l'application, avec des routes publiques en exception."
+projet: loup-garou
+duree: 65
+prerequis: Section b (inscription et connexion).
+exercices: 4
+sidebar:
+  order: 3
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Le client a maintenant un jeton. Reste à l'exiger : pour chaque route protégée, il faut lire l'en-tête `Authorization`, vérifier le jeton, et refuser la requête avant même que ta méthode de contrôleur ne s'exécute. C'est le travail d'un **guard**.
+
+Un guard est une classe qui implémente `CanActivate`. NestJS l'appelle **avant** le contrôleur : s'il renvoie `true`, la requête continue ; s'il lève une exception, elle s'arrête là, avec le statut de l'exception. Tu retrouves l'idée du middleware de la partie 2 (du code qui s'intercale avant ta route), en plus structuré : un guard sait, par exemple, quelle méthode de quel contrôleur va être appelée.
+
+## Sécurisé par défaut
+
+On pourrait ajouter `@UseGuards(AuthGuard)` sur chaque contrôleur protégé. Le risque : oublier une route, et l'exposer à tout le monde sans que rien ne le signale. On inverse donc la logique : le guard s'applique à **toute l'application**, et ce sont les routes ouvertes qu'il faut marquer explicitement.
+
+Ce marquage passe par un décorateur maison, fabriqué avec `SetMetadata`, qui accroche une information à une méthode ou à une classe :
+
+```ts title="src/auth/public.decorator.ts"
+import { SetMetadata } from '@nestjs/common';
+
+export const EST_PUBLIC = 'estPublic';
+export const Public = () => SetMetadata(EST_PUBLIC, true);
+```
+
+Deux petits types décrivent ce que le guard va ranger sur la requête :
+
+```ts title="src/auth/types.ts"
+import type { Request } from 'express';
+import type { Role } from '../utilisateurs/utilisateur.entity.js';
+
+export interface PayloadJwt {
+	sub: number;
+	pseudo: string;
+	role: Role;
+}
+
+export interface UtilisateurCourantDonnees {
+	id: number;
+	pseudo: string;
+	role: Role;
+}
+
+export type RequeteAuthentifiee = Request & { utilisateur?: UtilisateurCourantDonnees };
+```
+
+`import type` réapparaît : ces types n'existent qu'à la compilation, et TypeScript exige cette forme dès qu'un type importé sert dans une signature décorée (partie 5, section c).
+
+## Le guard
+
+```ts title="src/auth/auth.guard.ts" {15,16,19,20,23,24}
+import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { JwtService } from '@nestjs/jwt';
+import { EST_PUBLIC } from './public.decorator.js';
+import type { PayloadJwt, RequeteAuthentifiee } from './types.js';
+
+@Injectable()
+export class AuthGuard implements CanActivate {
+	constructor(
+		private readonly jwt: JwtService,
+		private readonly reflector: Reflector,
+	) {}
+
+	async canActivate(contexte: ExecutionContext): Promise<boolean> {
+		const estPublic = this.reflector.getAllAndOverride<boolean>(EST_PUBLIC, [contexte.getHandler(), contexte.getClass()]);
+		if (estPublic) return true;
+
+		const requete = contexte.switchToHttp().getRequest<RequeteAuthentifiee>();
+		const [type, jeton] = requete.headers.authorization?.split(' ') ?? [];
+		if (type !== 'Bearer' || !jeton) throw new UnauthorizedException('Jeton manquant');
+
+		try {
+			const payload = await this.jwt.verifyAsync<PayloadJwt>(jeton);
+			requete.utilisateur = { id: payload.sub, pseudo: payload.pseudo, role: payload.role };
+		} catch {
+			throw new UnauthorizedException('Jeton invalide ou expiré');
+		}
+		return true;
+	}
+}
+```
+
+- Lignes 15 et 16 : le `Reflector` lit le marquage `@Public()`, sur la méthode d'abord, puis sur la classe (`getAllAndOverride`). Une route publique passe sans rien vérifier.
+- Lignes 19 et 20 : le jeton attendu a la forme `Authorization: Bearer <jeton>`. Sinon, `401`.
+- Ligne 23 : `verifyAsync` contrôle la signature **et** l'expiration, et lève l'une des erreurs du tableau de la section b. On ne distingue pas les causes dans la réponse : au client, `Jeton invalide ou expiré` suffit.
+- Ligne 24 : si tout va bien, le guard **range l'identité sur la requête**, où les méthodes de contrôleur pourront la lire.
+
+Pour l'appliquer partout, on l'enregistre comme provider spécial, `APP_GUARD`, dans `AuthModule` :
+
+```ts title="src/auth/auth.module.ts" {1,9}
+import { APP_GUARD } from '@nestjs/core';
+// … autres imports
+
+@Module({
+	imports: [UtilisateursModule, JwtModule.registerAsync({ /* … */ })],
+	controllers: [AuthController],
+	providers: [
+		AuthService,
+		{ provide: APP_GUARD, useClass: AuthGuard },
+	],
+})
+export class AuthModule {}
+```
+
+`APP_GUARD` fait de `AuthGuard` un guard **global**, tout en le laissant profiter de l'injection de dépendances (il reçoit `JwtService` et `Reflector`). Les deux routes qui doivent rester ouvertes sont marquées :
+
+```ts title="src/auth/auth.controller.ts" {1,5}
+@Public()
+@Post('inscription')
+inscrire(@Body() dto: InscriptionDto) { /* … */ }
+
+@Public()
+@Post('connexion')
+@HttpCode(200)
+connecter(@Body() dto: ConnexionDto) { /* … */ }
+```
+
+## Savoir qui appelle
+
+Une méthode de contrôleur veut souvent connaître l'utilisateur courant. Plutôt que de manipuler l'objet requête, on écrit un **décorateur de paramètre** :
+
+```ts title="src/auth/utilisateur-courant.decorator.ts"
+import { createParamDecorator, ExecutionContext } from '@nestjs/common';
+import type { RequeteAuthentifiee } from './types.js';
+
+export const UtilisateurCourant = createParamDecorator((_donnees: unknown, contexte: ExecutionContext) => {
+	return contexte.switchToHttp().getRequest<RequeteAuthentifiee>().utilisateur;
+});
+```
+
+```ts title="src/auth/auth.controller.ts"
+@Get('moi')
+moi(@UtilisateurCourant() utilisateur: UtilisateurCourantDonnees) {
+	return this.authService.profil(utilisateur.id);
+}
+```
+
+`profil` relit l'utilisateur en base avec `trouverParId`, sans `select` particulier : `motDePasseHache` n'est pas chargé, grâce au `select: false` de la section a, et n'apparaîtra donc jamais dans la réponse. Résultat, avec `curl` :
+
+```text
+GET /api/auth/moi                                     → 401 {"message":"Jeton manquant", …}
+GET /api/auth/moi  (Authorization: Bearer abc)        → 401 {"message":"Jeton invalide ou expiré", …}
+GET /api/auth/moi  (Authorization: Basic <jeton>)     → 401 {"message":"Jeton manquant", …}
+GET /api/auth/moi  (Authorization: Bearer <vrai jeton>) → 200 {"id":1,"pseudo":"LouveGrise","role":"joueur"}
+```
+
+## Tester de bout en bout
+
+Un guard se teste avec de vraies requêtes, comme en partie 6, section c. Les tests de la partie 6 servent de modèle : `configurerApp`, la base de test, un `TRUNCATE` avant chaque test.
+
+```ts title="test/auth.e2e-spec.ts"
+describe('Auth (e2e)', () => {
+	let app: INestApplication;
+	let dataSource: DataSource;
+
+	const http = () => request(app.getHttpServer());
+	const inscrire = (pseudo = 'LouveGrise', motDePasse = 'MotDePasse!42') =>
+		http().post('/api/auth/inscription').send({ pseudo, motDePasse });
+	const connecter = async (pseudo = 'LouveGrise', motDePasse = 'MotDePasse!42') => {
+		const reponse = await http().post('/api/auth/connexion').send({ pseudo, motDePasse });
+		return reponse.body.accessToken as string;
+	};
+
+	// beforeAll : application + dataSource, beforeEach : TRUNCATE, afterAll : app.close()
+
+	describe('GET /api/auth/moi', () => {
+		it('refuse une requête sans jeton', async () => {
+			await http().get('/api/auth/moi').expect(401);
+		});
+
+		it('renvoie le profil avec un jeton valide, sans le hachage', async () => {
+			await inscrire();
+			const jeton = await connecter();
+			const reponse = await http().get('/api/auth/moi').set('Authorization', `Bearer ${jeton}`).expect(200);
+			expect(reponse.body).toEqual({ id: 1, pseudo: 'LouveGrise', role: 'joueur' });
+		});
+
+		it('refuse un jeton falsifié', async () => {
+			await inscrire();
+			const [entete, , signature] = (await connecter()).split('.');
+			const faux = Buffer.from(JSON.stringify({ sub: 1, pseudo: 'LouveGrise', role: 'admin' })).toString('base64url');
+			await http().get('/api/auth/moi').set('Authorization', `Bearer ${entete}.${faux}.${signature}`).expect(401);
+		});
+
+		it('refuse un jeton expiré', async () => {
+			await inscrire();
+			const expire = await app.get(JwtService).signAsync({ sub: 1, pseudo: 'LouveGrise', role: 'joueur' }, { expiresIn: -10 });
+			const reponse = await http().get('/api/auth/moi').set('Authorization', `Bearer ${expire}`).expect(401);
+			expect(reponse.body.message).toBe('Jeton invalide ou expiré');
+		});
+	});
+});
+```
+
+Le jeton falsifié garde l'en-tête et la signature d'un vrai jeton, mais son contenu déclare `role: 'admin'` : c'est l'attaque que la signature est censée arrêter, et le test prouve qu'elle l'arrête.
+
+Trois pièges, tous rencontrés en écrivant ces tests, valent d'être connus.
+
+**Un `await` au milieu d'une requête.** Écris ceci :
+
+```ts
+await http().get('/api/auth/moi').set('Authorization', await connecter()).expect(200);
+```
+
+et le test échoue avec `Error: ECONNREFUSED: Connection refused`. Supertest ouvre son port dès que la requête est **construite**, `http().get(…)`, et le referme dès qu'aucune requête n'est **en cours d'envoi** : celle qu'on a construite mais pas encore envoyée n'est pas comptée. Pendant qu'on attend `connecter()`, la requête de connexion se termine et referme donc le port : la première n'a plus de serveur. La règle : obtiens le jeton **avant**, dans une variable, puis construis la requête, comme dans les tests ci-dessus.
+
+**Le guard déclaré dans `main.ts`.** Enregistre-le avec `app.useGlobalGuards(...)` dans `main.ts` plutôt qu'avec `APP_GUARD`, et tous les tests qui vérifient l'authentification échouent :
+
+```text
+Error: expected 401 "Unauthorized", got 500 "Internal Server Error"
+Error: expected 200 "OK", got 500 "Internal Server Error"
+```
+
+Un test crée sa propre application, sans passer par `main.ts` (partie 6, section c) : le guard n'y existe pas, la requête atteint le contrôleur sans identité, et celui-ci plante en lisant `utilisateur.id`. `APP_GUARD`, lui, est déclaré dans un **module**, donc présent partout, tests compris. C'est une raison de le préférer.
+
+**Un `TRUNCATE` qui refuse.** Dès qu'une autre table référence `utilisateurs` par une clé étrangère (les participations, en partie 5), `TRUNCATE TABLE utilisateurs` échoue avec `cannot truncate a table referenced in a foreign key constraint`. Cite toutes les tables concernées dans la même commande : `TRUNCATE TABLE participations, villages, utilisateurs RESTART IDENTITY`.
+
+<Exercices partie={7} de={8} a={11}>
+
+<Exercice numero="7.8" titre="Un guard global">
+Écris `AuthGuard`, le décorateur `@Public()` et enregistre le guard avec `APP_GUARD`. Marque l'inscription et la connexion comme publiques. Vérifie avec `curl` que `GET /api/produits` (et toutes les autres routes de ta marketplace) répond maintenant `401` sans jeton. Tes tests de la partie 6 échouent désormais, ce qui est normal : adapte-les pour se connecter d'abord.
+</Exercice>
+
+<Exercice numero="7.9" titre="Qui suis-je ?">
+Écris le décorateur `@CompteCourant()` et la route `GET /api/auth/moi`, qui renvoie `{ id, email, role }` lus en base. Vérifie que la réponse ne contient jamais `motDePasseHache`, même si tu ajoutes un champ à l'entité.
+</Exercice>
+
+<Exercice numero="7.10" titre="Tester le guard de bout en bout">
+Écris le test e2e de la route `moi` : sans jeton, avec un jeton falsifié (contenu modifié, signature conservée), avec un jeton expiré (`expiresIn: -10`), avec un jeton valide. Puis reproduis exprès le piège de Supertest : mets un `await connecter()` à l'intérieur de `.set('Authorization', …)`, note l'erreur exacte, et corrige en sortant le jeton dans une variable.
+</Exercice>
+
+<Exercice numero="7.11" titre="Le guard dans main.ts, exprès">
+Remplace `APP_GUARD` par `app.useGlobalGuards(app.get(AuthGuard))` dans `main.ts` (le guard devient alors un simple provider d'`AuthModule`). Lance `npm run test:e2e` : note les codes de statut obtenus à la place des `401`, et explique pourquoi. Remets `APP_GUARD`.
+</Exercice>
+
+</Exercices>

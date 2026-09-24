@@ -1,0 +1,137 @@
+---
+title: "a · Hacher les mots de passe"
+description: "Ne jamais stocker un mot de passe : seulement son empreinte, calculée avec argon2."
+projet: loup-garou
+duree: 45
+prerequis: Partie 6 terminée (surtout les sections a et b).
+exercices: 3
+sidebar:
+  order: 1
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Pour qu'un joueur puisse se reconnecter, ton serveur doit pouvoir vérifier son mot de passe. La solution qui vient d'abord à l'esprit — le stocker dans la base et le comparer — est la pire : le jour où la base fuit (une sauvegarde mal protégée, une faille, un employé indélicat), **tous** les mots de passe sont lisibles. Et comme beaucoup de gens réutilisent le même partout, la fuite déborde bien au-delà de ton application.
+
+On ne stocke donc jamais le mot de passe, mais son **empreinte** : le résultat d'une fonction de **hachage**, qui transforme n'importe quelle entrée en une chaîne de longueur fixe, et qui ne fonctionne que dans un sens. On ne peut pas retrouver le mot de passe à partir de l'empreinte ; on peut seulement, à la connexion, hacher ce que le joueur tape et comparer les deux empreintes.
+
+Attention à ne pas confondre le hachage avec le **chiffrement** : un texte chiffré se déchiffre avec la bonne clé, une empreinte ne se « déhache » pas.
+
+## Un hachage fait pour les mots de passe
+
+Pas n'importe quelle fonction de hachage. Celles qui servent à vérifier l'intégrité d'un fichier (SHA-256, par exemple) sont conçues pour être **rapides**, ce qui est exactement ce qu'un attaquant cherche : avec une base volée, il peut tester des millions de mots de passe par seconde. Une fonction de hachage **de mot de passe** est volontairement lente et gourmande en mémoire, et ajoute à chaque mot de passe un **sel** aléatoire, pour que deux comptes qui ont le même mot de passe n'aient pas la même empreinte.
+
+Le choix recommandé aujourd'hui est **argon2** (dans sa variante `argon2id`) :
+
+```bash
+npm install argon2
+```
+
+:::note[Un avertissement d'npm]
+À l'installation, npm peut afficher un avertissement sur les scripts d'installation d'`argon2` (`allow-scripts`). Le paquet fonctionne quand même : le script ci-dessous le prouve.
+:::
+
+Essaie-le dans un fichier isolé, hors de ton projet :
+
+```js title="hachage.mjs"
+import argon2 from 'argon2';
+
+const h1 = await argon2.hash('MotDePasse!42');
+const h2 = await argon2.hash('MotDePasse!42');
+
+console.log(h1);
+console.log(h1 === h2);
+console.log(await argon2.verify(h1, 'MotDePasse!42'));
+console.log(await argon2.verify(h1, 'autre'));
+```
+
+```text
+$argon2id$v=19$m=65536,p=4,t=3$/QW9H+KJ3RF7ugyyvcPYrA$3Av2QFyS8OeN9Ay2OagG7O2NEMtGGGpXfxgF9XrjvHI
+false
+true
+false
+```
+
+- Le **même** mot de passe, haché deux fois, donne **deux empreintes différentes** (`false`) : c'est le sel aléatoire.
+- `verify(empreinte, motDePasse)` renvoie `true` ou `false`. Pas besoin de conserver le sel à part : il fait partie de l'empreinte.
+- L'empreinte est une chaîne unique, qui contient tout ce qu'il faut : `argon2id` (la variante), `m=65536` (la mémoire utilisée, en kilo-octets, soit 64 Mo), `t=3` (le nombre de passes), `p=4` (le parallélisme), puis le sel, puis l'empreinte proprement dite. Comme les paramètres sont dans la chaîne, tu pourras les durcir plus tard sans casser les anciennes empreintes.
+- Hacher prend une trentaine de millisecondes : invisible pour un joueur qui se connecte, mais un coût énorme pour quelqu'un qui veut en tester des millions.
+
+`bcrypt` est l'autre choix courant, plus ancien, avec la même idée. Il a une limite à connaître : il **ignore tout ce qui dépasse 72 octets**. Deux mots de passe qui ne diffèrent qu'après le 72e caractère donnent la même empreinte : on a vérifié qu'un mot de passe de 72 caractères suivi de `DIFFERENT` est accepté à la place du mot de passe d'origine. Argon2 n'a pas ce défaut.
+
+## Dans l'entité
+
+L'empreinte va dans une colonne de l'entité `Utilisateur` de la partie 5, qui gagne aussi un rôle :
+
+```ts title="src/utilisateurs/utilisateur.entity.ts" {10,13}
+import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+
+export type Role = 'joueur' | 'admin';
+
+@Entity('utilisateurs')
+export class Utilisateur {
+	@PrimaryGeneratedColumn()
+	id: number;
+
+	@Column({ unique: true })
+	pseudo: string;
+
+	@Column({ select: false })
+	motDePasseHache: string;
+
+	@Column({ type: 'varchar', default: 'joueur' })
+	role: Role;
+}
+```
+
+- `unique: true` (ligne 10) : deux comptes ne peuvent pas avoir le même pseudo. C'est la base qui le garantit, pas ton code — on y revient en section b.
+- `select: false` (ligne 13) : par défaut, TypeORM **ne charge pas** cette colonne. Un `find()` ou un `findOneBy()` renvoie l'utilisateur sans son empreinte, et elle ne peut donc pas se retrouver, par mégarde, dans une réponse JSON. Pour la lire, il faut la demander explicitement, ce qu'on ne fera qu'au moment de la connexion.
+- `type: 'varchar'` sur le rôle : TypeORM ne sait pas déduire un type de colonne d'un type union TypeScript comme `Role`, et refuse de démarrer avec `Data type "Object" in "Utilisateur.role" is not supported by "postgres" database`. On lui dit donc que c'est du texte.
+
+Le service expose une méthode qui **demande** l'empreinte, et une qui ne la demande pas :
+
+```ts title="src/utilisateurs/utilisateurs.service.ts" {14-19}
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Utilisateur } from './utilisateur.entity.js';
+
+@Injectable()
+export class UtilisateursService {
+	constructor(@InjectRepository(Utilisateur) private readonly utilisateurs: Repository<Utilisateur>) {}
+
+	creer(pseudo: string, motDePasseHache: string) {
+		return this.utilisateurs.save(this.utilisateurs.create({ pseudo, motDePasseHache }));
+	}
+
+	trouverAvecMotDePasse(pseudo: string) {
+		return this.utilisateurs.findOne({
+			where: { pseudo },
+			select: { id: true, pseudo: true, role: true, motDePasseHache: true },
+		});
+	}
+
+	trouverParId(id: number) {
+		return this.utilisateurs.findOneBy({ id });
+	}
+}
+```
+
+Ajouter une colonne à une table qui contient déjà des lignes demande de la prudence (partie 5, section d). Ta table `utilisateurs` en a peut-être : une colonne obligatoire comme `motDePasseHache` fait échouer la migration avec `column "motDePasseHache" of relation "utilisateurs" contains null values`, parce que les anciennes lignes n'ont aucun mot de passe à y mettre. En développement, le plus simple est de vider la table avec ton script de données de test ; en production, il faudrait ajouter la colonne facultative, remplir les lignes, puis la rendre obligatoire.
+
+<Exercices partie={7} de={1} a={3}>
+
+<Exercice numero="7.1" titre="Hacher, deux fois">
+Installe `argon2` et écris le script `hachage.mjs` de la section. Vérifie que deux hachages du même mot de passe diffèrent, et que `verify` répond `true` puis `false`. Puis change un seul caractère de l'empreinte : que renvoie `verify` ? Et si tu lui donnes `'pas-un-hachage'` ? Note aussi le temps moyen d'un hachage.
+</Exercice>
+
+<Exercice numero="7.2" titre="Des comptes pour la marketplace">
+Crée l'entité `Compte` (`id`, `email` unique, `motDePasseHache` avec `select: false`, `role` avec les valeurs `acheteur` (par défaut), `vendeur` et `admin`, en `type: 'varchar'`). Génère et exécute la migration (partie 5, section d). Vérifie avec `\d comptes` que la colonne existe, et qu'un `find()` du repository ne renvoie pas le hachage.
+</Exercice>
+
+<Exercice numero="7.3" titre="Durcir le hachage">
+Hache un mot de passe avec `argon2.hash('x', { memoryCost: 2 ** 17, timeCost: 4 })` et compare l'empreinte obtenue, ses paramètres et son temps de calcul à ceux du réglage par défaut. Vérifie qu'une ancienne empreinte est toujours acceptée par `verify`, puis regarde ce que renvoie `argon2.needsRehash(ancienneEmpreinte, { memoryCost: 2 ** 17, timeCost: 4 })` : à quoi cela te servirait-il, à la prochaine connexion d'un joueur ?
+</Exercice>
+
+</Exercices>

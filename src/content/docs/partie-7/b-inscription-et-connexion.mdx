@@ -1,0 +1,306 @@
+---
+title: "b · Inscription et connexion"
+description: "Créer un compte, se connecter, et recevoir un jeton JWT que le client présentera à chaque requête."
+projet: loup-garou
+duree: 65
+prerequis: Section a (hacher les mots de passe).
+exercices: 4
+sidebar:
+  order: 2
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Un joueur envoie son pseudo et son mot de passe **une seule fois**, à la connexion. Il faut ensuite qu'il puisse prouver son identité à chaque requête suivante sans renvoyer le mot de passe : c'est le rôle d'un **jeton**. Le serveur en émet un à la connexion, le client le renvoie dans l'en-tête `Authorization` de chaque requête, et le serveur le vérifie.
+
+## Ce qu'est un JWT
+
+Le format le plus courant est le **JWT** (*JSON Web Token*). C'est une chaîne de trois morceaux séparés par des points :
+
+```text
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjEsInBzZXVkbyI6IkxvdXZlR3Jpc2UiLC…4TQP-QDcU8PX3qa9ALH2CUAldZoozSFRPcqjrJVtn6Y
+   en-tête (algorithme)                   contenu (les « claims »)              signature
+```
+
+Les deux premiers morceaux sont du JSON encodé en base64 : n'importe qui peut les décoder, sans aucun secret. Avec Node :
+
+```bash
+node -e "console.log(JSON.parse(Buffer.from(process.argv[1].split('.')[1], 'base64url')))" LE_JETON
+```
+
+```text
+{ sub: 1, pseudo: 'LouveGrise', role: 'joueur', iat: 1790281066, exp: 1790281966 }
+```
+
+- `sub` (*subject*) est l'identifiant de l'utilisateur, `iat` (*issued at*) l'instant d'émission et `exp` (*expiration*) celui où le jeton cesse d'être valable, en secondes depuis 1970. `pseudo` et `role` sont des informations qu'on choisit d'y mettre.
+- Le contenu est **lisible, pas secret**. N'y mets jamais un mot de passe ni rien de confidentiel.
+- Le troisième morceau, la **signature**, est calculé à partir des deux premiers **et d'un secret que seul le serveur connaît**. C'est elle qui garantit que le contenu n'a pas été modifié : changer `joueur` en `admin` dans le contenu invaliderait la signature, et le serveur refuserait le jeton.
+
+Le serveur ne garde aucune trace des jetons émis : pour en vérifier un, il recalcule la signature et regarde `exp`. C'est ce qui rend le JWT pratique. Mais c'est aussi sa limite : **on ne peut pas annuler un jeton avant son expiration**. D'où la durée de vie courte (15 minutes ici), et le refresh token de la section e.
+
+## Le secret
+
+La signature vaut ce que vaut le secret : s'il est court ou deviné, n'importe qui peut fabriquer de faux jetons. Génère-en un long et aléatoire, mets-le dans le `.env` (jamais dans le code, jamais dans Git), et exige une longueur minimale dans la validation de la partie 4 :
+
+```bash
+node -e "console.log(require('node:crypto').randomBytes(48).toString('base64url'))"
+```
+
+```bash title=".env"
+JWT_SECRET=colle-ici-la-chaine-de-64-caracteres-generee-par-la-commande
+```
+
+```ts title="src/config/variables-environnement.ts"
+@IsString()
+@MinLength(32)
+JWT_SECRET: string;
+```
+
+## Le service d'authentification
+
+`@nestjs/jwt` signe et vérifie les jetons :
+
+```bash
+npm install @nestjs/jwt
+```
+
+```ts title="src/auth/auth.module.ts" {12,15,16}
+import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { JwtModule } from '@nestjs/jwt';
+import { UtilisateursModule } from '../utilisateurs/utilisateurs.module.js';
+import { AuthController } from './auth.controller.js';
+import { AuthService } from './auth.service.js';
+
+@Module({
+	imports: [
+		UtilisateursModule,
+		JwtModule.registerAsync({
+			global: true,
+			inject: [ConfigService],
+			useFactory: (config: ConfigService) => ({
+				secret: config.get<string>('JWT_SECRET'),
+				signOptions: { expiresIn: '15m' },
+			}),
+		}),
+	],
+	controllers: [AuthController],
+	providers: [AuthService],
+})
+export class AuthModule {}
+```
+
+`global: true` rend `JwtService` injectable partout, sans réimporter le module. Le secret vient de `ConfigService`, comme la connexion à la base en partie 5, et `expiresIn` fixe la durée de vie de tous les jetons.
+
+```ts title="src/auth/auth.service.ts" {11,19,24,33,34,38}
+import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import * as argon2 from 'argon2';
+import { QueryFailedError } from 'typeorm';
+import { UtilisateursService } from '../utilisateurs/utilisateurs.service.js';
+import { ConnexionDto } from './dto/connexion.dto.js';
+import { InscriptionDto } from './dto/inscription.dto.js';
+
+@Injectable()
+export class AuthService {
+	private readonly hacheFactice = argon2.hash('mot de passe factice');
+
+	constructor(
+		private readonly utilisateurs: UtilisateursService,
+		private readonly jwt: JwtService,
+	) {}
+
+	async inscrire(dto: InscriptionDto) {
+		const motDePasseHache = await argon2.hash(dto.motDePasse);
+		try {
+			const utilisateur = await this.utilisateurs.creer(dto.pseudo, motDePasseHache);
+			return { id: utilisateur.id, pseudo: utilisateur.pseudo };
+		} catch (erreur) {
+			if (erreur instanceof QueryFailedError && (erreur.driverError as { code?: string }).code === '23505') {
+				throw new ConflictException('Ce pseudo est déjà pris');
+			}
+			throw erreur;
+		}
+	}
+
+	async connecter(dto: ConnexionDto) {
+		const utilisateur = await this.utilisateurs.trouverAvecMotDePasse(dto.pseudo);
+		const hache = utilisateur?.motDePasseHache ?? (await this.hacheFactice);
+		const valide = await argon2.verify(hache, dto.motDePasse);
+		if (!utilisateur || !valide) {
+			throw new UnauthorizedException('Identifiants invalides');
+		}
+		const accessToken = await this.jwt.signAsync({ sub: utilisateur.id, pseudo: utilisateur.pseudo, role: utilisateur.role });
+		return { accessToken };
+	}
+}
+```
+
+Plusieurs détails comptent :
+
+- **L'inscription** (ligne 19) hache le mot de passe avant tout, et ne renvoie que l'`id` et le pseudo : jamais l'entité entière, qui contient l'empreinte.
+- **Le doublon** (ligne 24) : le code SQL `23505` est celui d'une violation de contrainte d'unicité, comme `23503` pour une clé étrangère en partie 5. On le transforme en `409 Conflict`. Vérifier d'abord « ce pseudo existe-t-il ? » puis créer ne suffirait pas : deux inscriptions simultanées passeraient toutes les deux la vérification. Seule la contrainte de la base tranche.
+- **Le refus est toujours le même**, `Identifiants invalides`, que le pseudo n'existe pas ou que le mot de passe soit faux. Dire « ce pseudo n'existe pas » permettrait à un attaquant de dresser la liste des comptes.
+- **Le faux hachage** (lignes 11, 33 et 34) ferme une fuite plus subtile. Si le pseudo est inconnu, on pourrait répondre tout de suite ; mais la réponse arriverait alors beaucoup plus vite que pour un vrai compte, dont on vérifie l'empreinte. Dans nos mesures : environ 6 ms pour un pseudo inconnu, contre 32 ms pour un vrai pseudo avec un mauvais mot de passe. Il suffit de chronométrer pour savoir quels pseudos existent. En vérifiant, dans tous les cas, un mot de passe contre une empreinte (vraie ou factice), les deux réponses prennent le même temps : 35 ms contre 33 ms après correction.
+- **Le jeton** (ligne 38) contient l'identifiant, le pseudo et le rôle. `signAsync` ajoute `iat` et `exp` tout seul.
+
+Le contrôleur expose deux routes. La connexion répond `200`, pas le `201` que NestJS met par défaut sur un `POST` : elle ne crée rien.
+
+```ts title="src/auth/auth.controller.ts"
+@Controller('api/auth')
+export class AuthController {
+	constructor(private readonly authService: AuthService) {}
+
+	@Post('inscription')
+	inscrire(@Body() dto: InscriptionDto) {
+		return this.authService.inscrire(dto);
+	}
+
+	@Post('connexion')
+	@HttpCode(200)
+	connecter(@Body() dto: ConnexionDto) {
+		return this.authService.connecter(dto);
+	}
+}
+```
+
+`InscriptionDto` valide un `pseudo` de 3 à 20 caractères (`@MinLength(3)`, `@MaxLength(20)`) et un `motDePasse` d'au moins 8 ; `ConnexionDto` se contente d'exiger deux chaînes non vides. Avec `curl` :
+
+```text
+POST /api/auth/inscription {"pseudo":"LouveGrise","motDePasse":"MotDePasse!42"}
+→ 201 {"id":1,"pseudo":"LouveGrise"}
+
+(même requête, une seconde fois)
+→ 409 {"message":"Ce pseudo est déjà pris","error":"Conflict","statusCode":409}
+
+POST /api/auth/inscription {"pseudo":"Bob","motDePasse":"abc"}
+→ 400 {"message":["motDePasse must be longer than or equal to 8 characters"], …}
+
+POST /api/auth/connexion {"pseudo":"LouveGrise","motDePasse":"MotDePasse!42"}
+→ 200 {"accessToken":"eyJhbGciOiJIUzI1NiIs…"}
+
+POST /api/auth/connexion {"pseudo":"LouveGrise","motDePasse":"faux"}
+→ 401 {"message":"Identifiants invalides","error":"Unauthorized","statusCode":401}
+```
+
+## Quand la vérification échoue
+
+Un jeton peut être refusé pour plusieurs raisons, et la bibliothèque le dit précisément. Voici ce que `jwt.verify` (la bibliothèque `jsonwebtoken`, utilisée par `@nestjs/jwt`) lève dans chaque cas :
+
+| Situation | Erreur |
+|---|---|
+| Jeton valide | aucune |
+| Date `exp` dépassée | `TokenExpiredError: jwt expired` |
+| Signé avec un autre secret | `JsonWebTokenError: invalid signature` |
+| Contenu modifié après signature (`role: 'admin'`) | `JsonWebTokenError: invalid signature` |
+| Pas un JWT | `JsonWebTokenError: jwt malformed` |
+
+Le contenu falsifié donne la même erreur qu'un mauvais secret : la signature ne correspond plus, et rien de plus n'est à savoir.
+
+## Tester
+
+Le service se teste comme en partie 6, avec des doublures pour l'accès aux données et pour `JwtService`. Le vrai hachage, lui, reste réel : c'est ce qu'on veut vérifier.
+
+```ts title="src/auth/auth.service.spec.ts"
+import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { Test } from '@nestjs/testing';
+import * as argon2 from 'argon2';
+import { QueryFailedError } from 'typeorm';
+import { UtilisateursService } from '../utilisateurs/utilisateurs.service.js';
+import { AuthService } from './auth.service.js';
+
+describe('AuthService', () => {
+	let service: AuthService;
+	const utilisateurs = { creer: vi.fn(), trouverAvecMotDePasse: vi.fn() };
+	const jwt = { signAsync: vi.fn() };
+
+	beforeEach(async () => {
+		vi.resetAllMocks();
+		const module = await Test.createTestingModule({
+			providers: [
+				AuthService,
+				{ provide: UtilisateursService, useValue: utilisateurs },
+				{ provide: JwtService, useValue: jwt },
+			],
+		}).compile();
+		service = module.get(AuthService);
+	});
+
+	describe('inscrire', () => {
+		it('ne transmet jamais le mot de passe en clair, seulement son hachage', async () => {
+			utilisateurs.creer.mockResolvedValue({ id: 1, pseudo: 'LouveGrise' });
+
+			await service.inscrire({ pseudo: 'LouveGrise', motDePasse: 'MotDePasse!42' });
+
+			const [pseudo, hache] = utilisateurs.creer.mock.calls[0];
+			expect(pseudo).toBe('LouveGrise');
+			expect(hache).not.toBe('MotDePasse!42');
+			expect(hache).toMatch(/^\$argon2id\$/);
+			await expect(argon2.verify(hache, 'MotDePasse!42')).resolves.toBe(true);
+		});
+
+		it('renvoie 409 quand le pseudo existe déjà', async () => {
+			const doublon = new QueryFailedError('INSERT', [], Object.assign(new Error('doublon'), { code: '23505' }));
+			utilisateurs.creer.mockRejectedValue(doublon);
+
+			await expect(service.inscrire({ pseudo: 'LouveGrise', motDePasse: 'MotDePasse!42' })).rejects.toThrow(ConflictException);
+		});
+	});
+
+	describe('connecter', () => {
+		it('donne le même refus pour un pseudo inconnu et pour un mauvais mot de passe', async () => {
+			utilisateurs.trouverAvecMotDePasse.mockResolvedValueOnce(null);
+			const inconnu = await service.connecter({ pseudo: 'Fantome', motDePasse: 'faux' }).catch((e) => e);
+
+			utilisateurs.trouverAvecMotDePasse.mockResolvedValueOnce({
+				id: 1,
+				pseudo: 'LouveGrise',
+				role: 'joueur',
+				motDePasseHache: await argon2.hash('MotDePasse!42'),
+			});
+			const mauvais = await service.connecter({ pseudo: 'LouveGrise', motDePasse: 'faux' }).catch((e) => e);
+
+			expect(inconnu).toBeInstanceOf(UnauthorizedException);
+			expect(mauvais).toBeInstanceOf(UnauthorizedException);
+			expect(inconnu.message).toBe(mauvais.message);
+		});
+
+		it('signe un jeton pour les bons identifiants', async () => {
+			utilisateurs.trouverAvecMotDePasse.mockResolvedValue({
+				id: 1,
+				pseudo: 'LouveGrise',
+				role: 'joueur',
+				motDePasseHache: await argon2.hash('MotDePasse!42'),
+			});
+			jwt.signAsync.mockResolvedValue('jeton-signe');
+
+			await expect(service.connecter({ pseudo: 'LouveGrise', motDePasse: 'MotDePasse!42' })).resolves.toEqual({ accessToken: 'jeton-signe' });
+			expect(jwt.signAsync).toHaveBeenCalledWith({ sub: 1, pseudo: 'LouveGrise', role: 'joueur' });
+		});
+	});
+});
+```
+
+Le test de doublon fabrique lui-même une `QueryFailedError` portant le code `23505` : il n'a pas besoin de base de données pour vérifier que le service la traduit en `409`.
+
+<Exercices partie={7} de={4} a={7}>
+
+<Exercice numero="7.4" titre="Inscrire les acheteurs">
+Ajoute `POST /api/auth/inscription` à ta marketplace : un `email` (`@IsEmail()`) et un `motDePasse` d'au moins 8 caractères, un compte créé avec le rôle `acheteur`, et une réponse `201` avec seulement `{ id, email }`. Un email déjà inscrit répond `409`, en attrapant la violation d'unicité (`23505`). Écris le test unitaire du service, sur le modèle de la section : le hachage transmis n'est pas le mot de passe, et le doublon donne un `409`.
+</Exercice>
+
+<Exercice numero="7.5" titre="Connecter, et lire son jeton">
+Ajoute `POST /api/auth/connexion` (`200`), qui renvoie `{ accessToken }`, un JWT de 15 minutes contenant `sub`, `email` et `role`. Exige un `JWT_SECRET` d'au moins 32 caractères dans ta validation d'environnement : essaie un secret plus court et note l'erreur au démarrage. Puis décode à la main le contenu d'un jeton avec la commande de la section, et retrouve `sub`, `iat` et `exp`.
+</Exercice>
+
+<Exercice numero="7.6" titre="Ne rien révéler, y compris par le temps">
+Fais répondre `Identifiants invalides` dans les deux cas d'échec. Puis mesure, avec dix requêtes chacune, le temps moyen d'une connexion avec un email inconnu et avec un vrai email et un mauvais mot de passe. Tu dois trouver un écart de plusieurs fois le temps le plus court. Ajoute le faux hachage de la section, et mesure à nouveau : les deux temps doivent devenir voisins.
+</Exercice>
+
+<Exercice numero="7.7" titre="Casser un jeton, exprès">
+Écris un petit script avec `jsonwebtoken` qui signe un jeton avec ton secret, puis tente de le vérifier dans quatre cas : valide, expiré (`expiresIn: -10`), vérifié avec un autre secret, et dont tu as remplacé le contenu par `{"sub":1,"role":"admin"}` en gardant l'ancienne signature. Note les quatre résultats et vérifie qu'ils correspondent au tableau de la section.
+</Exercice>
+
+</Exercices>

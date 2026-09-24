@@ -1,0 +1,209 @@
+---
+title: "h · Aller plus loin : Clerk"
+description: "Confier l'authentification à un service, et ne garder côté API que la vérification des jetons."
+duree: 55
+prerequis: Section c (protéger les routes). Section bonus, non nécessaire pour la suite du cours.
+exercices: 3
+sidebar:
+  order: 8
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Tout ce que tu as écrit dans cette partie — hachage, connexion, jetons, renouvellement, limitation des tentatives — a un coût : c'est du code à maintenir, et une responsabilité. Un mot de passe mal géré et c'est ta faute. Une autre approche consiste à **déléguer** l'authentification à un service spécialisé. **Clerk** en est un : il héberge les comptes, les pages d'inscription et de connexion, la connexion avec un compte Google ou GitHub, la double authentification, et il émet lui-même les jetons.
+
+:::caution[Ce qui a été vérifié, et ce qui ne l'a pas été]
+Tout le code de cette section a été exécuté et testé, avec des jetons **signés localement**, portant les mêmes informations qu'un jeton de session Clerk. En revanche, la création d'un compte Clerk, la configuration de son tableau de bord et l'obtention de vrais jetons n'ont pas pu être vérifiées ici : pour cette partie, suis la documentation à jour du service, qui évolue plus vite que ce cours. Clerk est aussi un service commercial : vérifie ses conditions et ses tarifs actuels avant de t'y engager.
+:::
+
+## Ce qui change pour ton API
+
+Avec Clerk, ce n'est plus ton API qui reçoit un mot de passe. Le front-end affiche les composants de Clerk, qui authentifient le visiteur, puis reçoit de Clerk un **jeton de session**, qu'il envoie à ton API dans `Authorization: Bearer …`, exactement comme dans la section c. Ton rôle se réduit à **vérifier ce jeton**.
+
+Il y a une différence de fond avec ton jeton maison. Le tien était signé avec un **secret partagé** (HS256) : quiconque peut vérifier un jeton peut aussi en fabriquer. Celui de Clerk est signé avec une **clé privée** que seul Clerk détient (RS256). Pour le vérifier, ton API n'a besoin que de la **clé publique** : elle permet de contrôler une signature, pas d'en produire une. Une fuite de ton API ne permet donc pas de forger des jetons.
+
+```bash
+npm install @clerk/backend
+```
+
+`@clerk/backend` fournit `verifyToken`, qui contrôle la signature, l'expiration et l'origine d'un jeton. Il a besoin de trois choses, que tu mettras dans le `.env` :
+
+- `CLERK_SECRET_KEY` : la clé secrète de ton application, qui permet à la bibliothèque de récupérer les clés publiques de Clerk.
+- `CLERK_AUTHORIZED_PARTIES` : la liste des origines de ton front-end (par exemple `http://localhost:5173`), séparées par des virgules.
+- `CLERK_JWT_KEY` (facultative) : la clé publique elle-même, au format PEM. Quand elle est fournie, la vérification se fait **sans aucun appel réseau**, ce qui permet de tester sans compte.
+
+## Ce que dit `verifyToken`
+
+Voici ce qui se passe, jeton par jeton, avec une paire de clés générée localement :
+
+| Jeton | Résultat |
+|---|---|
+| Valide | `sub` : l'identifiant de l'utilisateur chez Clerk, de la forme `user_…` |
+| Expiré | `token-expired` : `JWT is expired.` |
+| Signé avec une autre clé | `token-invalid-signature` : `JWT signature is invalid.` |
+| Émis pour une autre origine | `token-invalid-authorized-parties` : `Invalid JWT Authorized party claim (azp) "http://mechant.example". Expected "http://localhost:5173".` |
+| Sans origine (`azp`) | `token-invalid-authorized-parties`, avec `azp` valant `undefined` |
+| Pas un JWT | `token-invalid` : `Invalid JWT form. A JWT consists of three parts separated by dots.` |
+
+L'origine (`azp`, pour *authorized party*) dit quel site a demandé le jeton. Refuser les jetons dont l'origine n'est pas dans ta liste empêche qu'un jeton obtenu par un autre site soit accepté par ton API.
+
+## Le guard
+
+```ts title="src/clerk/clerk.guard.ts" {24,25,26,27,29,34}
+import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { verifyToken } from '@clerk/backend';
+import type { Request } from 'express';
+import { ProfilsService } from './profils.service.js';
+import type { ProfilClerk } from './profil-clerk.entity.js';
+
+export type RequeteClerk = Request & { profil?: ProfilClerk };
+
+@Injectable()
+export class ClerkGuard implements CanActivate {
+	constructor(
+		private readonly config: ConfigService,
+		private readonly profils: ProfilsService,
+	) {}
+
+	async canActivate(contexte: ExecutionContext): Promise<boolean> {
+		const requete = contexte.switchToHttp().getRequest<RequeteClerk>();
+		const [type, jeton] = requete.headers.authorization?.split(' ') ?? [];
+		if (type !== 'Bearer' || !jeton) throw new UnauthorizedException('Jeton manquant');
+
+		let clerkId: string;
+		try {
+			const payload = await verifyToken(jeton, {
+				secretKey: this.config.get<string>('CLERK_SECRET_KEY'),
+				jwtKey: this.config.get<string>('CLERK_JWT_KEY'),
+				authorizedParties: this.config.getOrThrow<string>('CLERK_AUTHORIZED_PARTIES').split(','),
+			});
+			clerkId = payload.sub;
+		} catch {
+			throw new UnauthorizedException('Jeton invalide ou expiré');
+		}
+
+		requete.profil = await this.profils.trouverOuCreer(clerkId);
+		return true;
+	}
+}
+```
+
+La structure est celle de ton guard de la section c : lire le jeton, le vérifier, ranger l'identité sur la requête. Les lignes 24 à 27 remplacent toute la vérification maison (`JwtService`, secret, expiration) par un seul appel. La ligne 29 récupère l'identité de l'utilisateur **chez Clerk**, son `sub`.
+
+## Un profil dans ta base
+
+Clerk connaît l'utilisateur, mais ta base de données doit pouvoir lui rattacher **tes** données : ses participations, ses produits. Il te faut donc une ligne à toi, reliée à l'identifiant Clerk. On la crée à la **première requête** authentifiée de l'utilisateur :
+
+```ts title="src/clerk/profil-clerk.entity.ts"
+@Entity('profils_clerk')
+export class ProfilClerk {
+	@PrimaryGeneratedColumn()
+	id: number;
+
+	@Column({ unique: true })
+	clerkId: string;
+
+	@Column({ type: 'varchar', default: 'joueur' })
+	role: string;
+}
+```
+
+```ts title="src/clerk/profils.service.ts"
+async trouverOuCreer(clerkId: string) {
+	await this.profils.upsert({ clerkId }, ['clerkId']);
+	return this.profils.findOneByOrFail({ clerkId });
+}
+```
+
+`upsert` insère la ligne, ou ne fait rien si elle existe déjà, en une seule instruction qui s'appuie sur la contrainte d'unicité de `clerkId`. Pourquoi pas « chercher, puis créer si absente » ? Parce que l'application reçoit souvent **plusieurs requêtes en même temps** au premier lancement d'un front-end, et que toutes les vérifications passeraient avant la première création : c'est le problème des inscriptions simultanées de la section b. On l'a mesuré : avec cinq premières requêtes simultanées, la version « chercher puis créer » a renvoyé des erreurs `500` sur 2 lancements sur 8, et la version `upsert` sur aucun des 8.
+
+Un avantage au passage : le **rôle** vit dans ta base, et le guard le relit à chaque requête. Change-le, et il vaut tout de suite pour le même jeton, alors qu'avec un rôle inscrit dans le jeton (section d), il fallait attendre l'expiration.
+
+Ce que ce cours ne couvre pas : quand un utilisateur supprime son compte chez Clerk, ton profil local reste. Clerk peut prévenir ton API par des **webhooks** pour que tu le supprimes à ton tour.
+
+## Tester sans compte Clerk
+
+On fabrique une paire de clés, on signe des jetons qui imitent ceux de Clerk, et on fournit la clé publique par `CLERK_JWT_KEY` : aucun appel réseau, aucun compte.
+
+```ts title="test/clerk.e2e-spec.ts"
+const paire = generateKeyPairSync('rsa', { modulusLength: 2048 });
+const etrangere = generateKeyPairSync('rsa', { modulusLength: 2048 });
+const CLE_PUBLIQUE = paire.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+const ORIGINE = 'http://localhost:5173';
+
+const jetonDe = (extra: Record<string, unknown> = {}, cle = paire.privateKey, expiresIn = 60) =>
+	jwt.sign({ sub: 'user_2abcDEF', sid: 'sess_2xyz', azp: ORIGINE, iss: 'https://exemple.clerk.accounts.dev', ...extra }, cle, {
+		algorithm: 'RS256',
+		expiresIn,
+		notBefore: 0,
+	});
+```
+
+Le module de test déclare `CLERK_JWT_KEY` et `CLERK_AUTHORIZED_PARTIES` avec `ConfigModule.forRoot({ load: [...] })`, la connexion à la base de test, et une route de démonstration protégée par `@UseGuards(ClerkGuard)`. Les tests couvrent les mêmes cas que pour ton guard :
+
+```ts
+it('accepte un jeton valide et crée le profil local à la première requête', async () => {
+	const reponse = await http().get('/api/clerk/moi').set('Authorization', `Bearer ${jetonDe()}`).expect(200);
+	expect(reponse.body).toEqual({ id: 1, clerkId: 'user_2abcDEF', role: 'joueur' });
+});
+
+it('ne crée qu\'un profil quand cinq premières requêtes arrivent en même temps', async () => {
+	const jeton = jetonDe();
+	const reponses = await Promise.all(
+		Array.from({ length: 5 }, () => http().get('/api/clerk/moi').set('Authorization', `Bearer ${jeton}`)),
+	);
+	expect(reponses.map((r) => r.status)).toEqual([200, 200, 200, 200, 200]);
+	const [{ total }] = await dataSource.query('SELECT count(*)::int AS total FROM profils_clerk');
+	expect(total).toBe(1);
+});
+
+it('lit le rôle dans notre base : un changement vaut tout de suite, avec le même jeton', async () => {
+	const jeton = jetonDe();
+	await http().get('/api/clerk/moi').set('Authorization', `Bearer ${jeton}`).expect(200);
+	await dataSource.query("UPDATE profils_clerk SET role = 'admin'");
+	const reponse = await http().get('/api/clerk/moi').set('Authorization', `Bearer ${jeton}`).expect(200);
+	expect(reponse.body.role).toBe('admin');
+});
+
+it('refuse sans jeton, jeton expiré, mauvaise clé ou mauvaise origine', async () => {
+	await http().get('/api/clerk/moi').expect(401);
+	await http().get('/api/clerk/moi').set('Authorization', `Bearer ${jetonDe({}, paire.privateKey, -60)}`).expect(401);
+	await http().get('/api/clerk/moi').set('Authorization', `Bearer ${jetonDe({}, etrangere.privateKey)}`).expect(401);
+	await http().get('/api/clerk/moi').set('Authorization', `Bearer ${jetonDe({ azp: 'http://mechant.example' })}`).expect(401);
+	const [{ total }] = await dataSource.query('SELECT count(*)::int AS total FROM profils_clerk');
+	expect(total).toBe(0);
+});
+```
+
+Le dernier test vérifie aussi qu'**aucun profil n'a été créé** par les quatre requêtes refusées : un jeton invalide ne doit jamais laisser de trace dans ta base.
+
+## Alors, lequel choisir ?
+
+| | Ton authentification (sections a à f) | Clerk |
+|---|---|---|
+| Mots de passe | chez toi, hachés par tes soins | chez le service, jamais dans ta base |
+| Ce que tu écris | hachage, connexion, jetons, renouvellement, limitation | un guard, et un profil local |
+| Pages d'inscription et de connexion | à construire | fournies par le service |
+| Connexion avec Google, double authentification… | à construire | fournies par le service |
+| Contrôle et dépendance | total | tu dépends d'un tiers (disponibilité, tarifs, évolutions) |
+| Coût | ton temps | un abonnement au-delà de l'offre gratuite éventuelle |
+
+Ni l'un ni l'autre n'est meilleur dans l'absolu. Construire soi-même apprend comment ça marche, et donne le contrôle ; déléguer supprime une surface d'attaque, et libère du temps pour ce qui fait la valeur de ton produit. Comprendre les sections a à f te permet de **choisir en connaissance de cause**, et de vérifier ce que fait un service quand tu lui confies ce rôle.
+
+<Exercices partie={7} de={24} a={26}>
+
+<Exercice numero="7.24" titre="Vérifier un jeton sans compte">
+Installe `@clerk/backend`. Écris un script qui génère une paire de clés RSA, signe un jeton avec `jsonwebtoken` (déjà présent via `@nestjs/jwt`, sinon `npm install jsonwebtoken` ; `algorithm: 'RS256'`, avec `sub`, `sid` et `azp`), puis le vérifie avec `verifyToken(jeton, { jwtKey, authorizedParties })`. Essaie les six cas du tableau (valide, expiré, mauvaise clé, mauvaise origine, sans origine, mal formé) et note, pour chacun, la raison (`reason`) de l'erreur.
+</Exercice>
+
+<Exercice numero="7.25" titre="Le guard Clerk et son profil local">
+Écris `ClerkGuard`, l'entité `ProfilClerk` et `ProfilsService.trouverOuCreer` avec `upsert`, et teste-les avec des jetons signés localement : profil créé à la première requête, réutilisé ensuite, jeton refusé dans les quatre cas sans profil créé. Ajoute le test des cinq requêtes simultanées. Remplace enfin `upsert` par « chercher puis créer » et relance ce test plusieurs fois : il peut réussir, puis échouer avec des `500`. Remets `upsert`.
+</Exercice>
+
+<Exercice numero="7.26" titre="Brancher un vrai compte Clerk (facultatif)">
+Crée une application gratuite sur le site de Clerk, note sa clé secrète et l'origine de ton front-end, mets-les dans `CLERK_SECRET_KEY` et `CLERK_AUTHORIZED_PARTIES` (sans `CLERK_JWT_KEY`, pour que la bibliothèque récupère les clés publiques elle-même), puis appelle ta route protégée avec un vrai jeton de session. Ce que tu observes dépend de la documentation actuelle du service : note ce qui marche, ce qui a changé par rapport à cette section, et ce qui te surprend.
+</Exercice>
+
+</Exercices>

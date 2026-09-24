@@ -1,0 +1,169 @@
+---
+title: "g · Aller plus loin : Passport"
+description: "La bibliothèque d'authentification la plus répandue autour de NestJS, pour reconnaître son style."
+duree: 40
+prerequis: Section c (protéger les routes). Section bonus, non nécessaire pour la suite du cours.
+exercices: 3
+sidebar:
+  order: 7
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Le guard des sections précédentes, tu l'as écrit toi-même : il lit l'en-tête, vérifie le jeton, range l'identité sur la requête. Dans beaucoup de projets NestJS, et dans la documentation officielle, on ne l'écrit pas : on s'appuie sur **Passport**, une bibliothèque qui découpe l'authentification en **stratégies**. Une stratégie sait vérifier une façon de s'authentifier : un jeton JWT, un mot de passe, un compte Google, un compte GitHub. Cette section refait la vérification du JWT avec Passport, pour que tu reconnaisses ce style quand tu le croiseras.
+
+```bash
+npm install @nestjs/passport passport passport-jwt
+npm install --save-dev @types/passport-jwt
+```
+
+## La stratégie
+
+```ts title="src/passport/jwt.strategy.ts" {11,13,17,18}
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { PassportStrategy } from '@nestjs/passport';
+import { ExtractJwt, Strategy } from 'passport-jwt';
+import type { PayloadJwt } from '../auth/types.js';
+
+@Injectable()
+export class JwtStrategy extends PassportStrategy(Strategy) {
+	constructor(config: ConfigService) {
+		super({
+			jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+			ignoreExpiration: false,
+			secretOrKey: config.getOrThrow<string>('JWT_SECRET'),
+		});
+	}
+
+	validate(payload: PayloadJwt) {
+		return { id: payload.sub, pseudo: payload.pseudo, role: payload.role };
+	}
+}
+```
+
+- Ligne 11 : où trouver le jeton. Ici, dans `Authorization: Bearer …`, ce que ton guard faisait à la main.
+- Ligne 13 : le secret qui sert à vérifier la signature (`getOrThrow` plante au démarrage s'il manque, plutôt que de renvoyer `undefined`). Passport vérifie aussi l'expiration, puisque `ignoreExpiration` est à `false`.
+- Lignes 17 et 18 : `validate` ne s'exécute que **si le jeton est valide**. Ce qu'elle renvoie est rangé sur la requête, dans `request.user` (et non `request.utilisateur`, le nom de ta version maison).
+
+## Le guard
+
+Le guard qui déclenche la stratégie s'obtient en une ligne : `AuthGuard('jwt')`, fourni par `@nestjs/passport` (à ne pas confondre avec le tien, qui portait le même nom). Pour retrouver le comportement « sécurisé par défaut » de la section c, avec `@Public()`, il faut surcharger `canActivate` :
+
+```ts title="src/passport/jwt-auth.guard.ts" {7,14}
+import { ExecutionContext, Injectable } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { AuthGuard } from '@nestjs/passport';
+import { EST_PUBLIC } from '../auth/public.decorator.js';
+
+@Injectable()
+export class JwtAuthGuard extends AuthGuard('jwt') {
+	constructor(private readonly reflector: Reflector) {
+		super();
+	}
+
+	canActivate(contexte: ExecutionContext) {
+		const estPublic = this.reflector.getAllAndOverride<boolean>(EST_PUBLIC, [contexte.getHandler(), contexte.getClass()]);
+		return estPublic ? true : super.canActivate(contexte);
+	}
+}
+```
+
+Il se déclare comme le tien, avec `PassportModule` et la stratégie parmi les providers :
+
+```ts
+@Module({
+	imports: [PassportModule /* , JwtModule, ConfigModule… */],
+	providers: [JwtStrategy, { provide: APP_GUARD, useClass: JwtAuthGuard }],
+})
+export class AuthModule {}
+```
+
+Les routes s'écrivent ensuite exactement comme avant, avec `@Public()` pour les ouvrir. Seule la lecture de l'identité change de nom :
+
+```ts
+@Get('moi')
+moi(@Req() requete: { user: unknown }) {
+	return requete.user;
+}
+```
+
+## Tester
+
+Les mêmes cas qu'en section c, dans un petit module de test isolé, sans base de données : Passport ne fait que vérifier le jeton.
+
+```ts title="test/passport.e2e-spec.ts"
+@Controller('api/passport')
+class DemoController {
+	@Public()
+	@Get('ouverte')
+	ouverte() {
+		return 'ouverte à tous';
+	}
+
+	@Get('moi')
+	moi(@Req() requete: { user: unknown }) {
+		return requete.user;
+	}
+}
+
+@Module({
+	imports: [
+		ConfigModule.forRoot({ ignoreEnvFile: true, load: [() => ({ JWT_SECRET: SECRET })] }),
+		PassportModule,
+		JwtModule.register({ secret: SECRET }),
+	],
+	controllers: [DemoController],
+	providers: [JwtStrategy, { provide: APP_GUARD, useClass: JwtAuthGuard }],
+})
+class DemoModule {}
+
+it('laisse passer un jeton valide et expose req.user', async () => {
+	const jeton = await jwt.signAsync(payload, { expiresIn: '15m' });
+	const reponse = await http().get('/api/passport/moi').set('Authorization', `Bearer ${jeton}`).expect(200);
+	expect(reponse.body).toEqual({ id: 1, pseudo: 'LouveGrise', role: 'joueur' });
+});
+
+it('refuse sans jeton', async () => {
+	const reponse = await http().get('/api/passport/moi').expect(401);
+	expect(reponse.body).toEqual({ message: 'Unauthorized', statusCode: 401 });
+});
+
+it('refuse un jeton expiré ou signé avec un autre secret', async () => {
+	const expire = await jwt.signAsync(payload, { expiresIn: -10 });
+	await http().get('/api/passport/moi').set('Authorization', `Bearer ${expire}`).expect(401);
+
+	const etranger = await jwt.signAsync(payload, { secret: 'un-autre-secret-de-plus-de-32-caracteres-xyz' });
+	await http().get('/api/passport/moi').set('Authorization', `Bearer ${etranger}`).expect(401);
+});
+```
+
+Un test peut définir ses propres contrôleur et module : ici, `DemoController` n'existe que pour la démonstration.
+
+## Alors, lequel choisir ?
+
+| | Ton guard | Passport |
+|---|---|---|
+| Dépendances | aucune de plus que `@nestjs/jwt` | `@nestjs/passport`, `passport`, `passport-jwt` |
+| Où est l'identité | `request.utilisateur`, un nom que tu choisis | `request.user`, la valeur renvoyée par `validate` |
+| Message d'un `401` | le tien (`Jeton manquant`, `Jeton invalide ou expiré`) | générique : `Unauthorized` |
+| Ajouter un autre moyen de se connecter (Google, GitHub…) | à écrire | une stratégie de plus, déjà écrite par la communauté |
+
+Pour une authentification par JWT seul, ton guard est plus court et te dit exactement ce qu'il fait. Passport devient précieux dès que tu veux **plusieurs façons** de s'authentifier avec la même API : c'est sa raison d'être, et la raison pour laquelle tu le verras partout.
+
+<Exercices partie={7} de={21} a={23}>
+
+<Exercice numero="7.21" titre="La stratégie JWT">
+Installe `@nestjs/passport`, `passport`, `passport-jwt` et `@types/passport-jwt`. Écris `JwtStrategy` (jeton lu dans `Authorization: Bearer`, secret lu avec `getOrThrow`) et un `JwtAuthGuard` qui étend `AuthGuard('jwt')`. Protège une route de démonstration qui renvoie `request.user`, et vérifie avec un vrai jeton de ta connexion qu'elle renvoie `{ id, email, role }`.
+</Exercice>
+
+<Exercice numero="7.22" titre="Sécurisé par défaut, avec Passport">
+Surcharge `canActivate` de ton guard pour respecter `@Public()`, et enregistre-le avec `APP_GUARD` dans un module de test isolé qui contient une route ouverte et une route protégée. Vérifie qu'une route `@Public()` répond `200` sans jeton, et qu'une route sans marquage répond `401`.
+</Exercice>
+
+<Exercice numero="7.23" titre="Comparer les deux guards">
+Passe tes tests d'authentification (jeton valide, absent, expiré, signé avec un autre secret) sur le guard Passport. Compare les corps de réponse des `401` avec ceux de ton guard maison : lequel aide le plus un client qui essaie de comprendre son erreur, et lequel en dit le moins à un attaquant ?
+</Exercice>
+
+</Exercices>

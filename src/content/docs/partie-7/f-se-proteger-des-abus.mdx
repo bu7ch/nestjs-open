@@ -1,0 +1,162 @@
+---
+title: "f · Se protéger des abus"
+description: "Limiter les tentatives de connexion, ajouter des en-têtes de sécurité et régler le CORS."
+projet: loup-garou
+duree: 55
+prerequis: Section e (le refresh token).
+exercices: 3
+sidebar:
+  order: 6
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Un hachage lent et des messages d'erreur muets ne suffisent pas : rien n'empêche un programme d'essayer des milliers de mots de passe sur ta route de connexion, ou d'inonder ton serveur de requêtes. Cette section ajoute trois protections, à la fois simples et efficaces.
+
+## Limiter le nombre de requêtes
+
+Le principe du **rate limiting** : compter les requêtes de chaque client, et répondre `429 Too Many Requests` au-delà d'un seuil, pendant une durée donnée. NestJS a un paquet pour ça :
+
+```bash
+npm install @nestjs/throttler
+```
+
+```ts title="src/app.module.ts" {3,4}
+ThrottlerModule.forRootAsync({
+	useFactory: () => ({
+		throttlers: [{ ttl: 60_000, limit: 100 }],
+		skipIf: () => process.env.THROTTLE_ACTIF === 'false',
+	}),
+}),
+```
+
+Ajoute aussi `{ provide: APP_GUARD, useClass: ThrottlerGuard }` aux `providers` d'`AppModule` : c'est, une fois encore, un guard global.
+
+- Ligne 3 : la limite **par défaut** de toute l'application, 100 requêtes par minute (`ttl` est en millisecondes) et par client, identifié par son adresse IP.
+- Ligne 4 : une porte de sortie pour les tests, expliquée plus bas.
+
+Les routes sensibles ont besoin d'une limite bien plus stricte. On la fixe avec un décorateur :
+
+```ts title="src/auth/auth.controller.ts" {2}
+@Public()
+@Throttle({ default: { limit: 5, ttl: 60_000 } })
+@Post('connexion')
+@HttpCode(200)
+connecter(@Body() dto: ConnexionDto) { /* … */ }
+```
+
+Ajoute-le de la même façon à `inscription` et à `rafraichir`. Un client qui envoie une sixième requête en moins d'une minute reçoit :
+
+```text
+429 {"statusCode":429,"message":"ThrottlerException: Too Many Requests"}
+```
+
+Cinq tentatives par minute suffisent à un humain qui a mal tapé son mot de passe, et rendent le test de milliers de mots de passe impraticable.
+
+Deux limites sont à connaître. Les compteurs vivent **en mémoire de l'application** : avec plusieurs instances du serveur, chacune compte de son côté, et un attaquant multiplie son quota (le partage passe par un stockage commun, comme Redis). Et derrière un serveur intermédiaire (un *reverse proxy*), l'adresse IP que voit l'application peut être celle de l'intermédiaire, ce qui ferait partager un seul compteur à tous les clients : la mise en production, en partie 10, y reviendra.
+
+### Le rate limiting et les tests
+
+Un test qui se connecte dix fois de suite atteint la limite de cinq par minute, et ne teste plus ce qu'on croit. On désactive donc la limitation en test, avec une variable d'environnement, et on ne la réactive que dans le fichier qui la teste. Dans `.env.test` :
+
+```bash title=".env.test"
+THROTTLE_ACTIF=false
+```
+
+Si tu oublies cette variable et que tous les tests tournent avec la limitation active, ils échouent de façon trompeuse :
+
+```text
+Error: expected 201 "Created", got 401 "Unauthorized"
+Error: expected 200 "OK", got 401 "Unauthorized"
+```
+
+Ce ne sont pas des `429`, mais des `401` : la connexion, bloquée, n'a renvoyé aucun jeton, et les requêtes suivantes n'en présentent aucun. Sept tests sur vingt-cinq échouent dans notre projet, sans que rien ne pointe vers la vraie cause.
+
+Le fichier qui teste la limitation la réactive explicitement :
+
+```ts title="test/abus.e2e-spec.ts"
+beforeAll(async () => {
+	process.env.THROTTLE_ACTIF = 'true';
+	const module = await Test.createTestingModule({ imports: [AppModule] }).compile();
+	app = module.createNestApplication();
+	configurerApp(app);
+	await app.init();
+});
+
+afterAll(async () => {
+	await app.close();
+	delete process.env.THROTTLE_ACTIF;
+});
+
+it('bloque la 6e tentative de connexion en une minute (429)', async () => {
+	for (let i = 1; i <= 5; i++) {
+		await http().post('/api/auth/connexion').send({ pseudo: 'Fantome', motDePasse: 'faux' }).expect(401);
+	}
+	const reponse = await http().post('/api/auth/connexion').send({ pseudo: 'Fantome', motDePasse: 'faux' }).expect(429);
+	expect(reponse.body.message).toBe('ThrottlerException: Too Many Requests');
+});
+```
+
+Pourquoi `process.env` et pas `ConfigService` pour `skipIf` ? Parce que `ConfigModule` lit `.env.test` **dès l'import** d'`AppModule`, avant que ton `beforeAll` ne change quoi que ce soit : la valeur du fichier serait déjà figée. `skipIf` est appelée à **chaque requête**, et lit `process.env` à ce moment-là, donc voit la valeur posée par le test. On l'a essayé de l'autre façon : la sixième tentative répondait `401`, pas `429`.
+
+## Des en-têtes de sécurité
+
+Les navigateurs respectent des en-têtes de réponse qui restreignent ce que la page peut faire (charger un script d'ailleurs, se faire deviner son type de contenu…). **Helmet** ajoute d'un coup un jeu d'en-têtes raisonnables, et retire `X-Powered-By`, qui annonce à tout le monde que ton serveur est Express :
+
+```bash
+npm install helmet
+```
+
+## Le CORS
+
+Un navigateur applique la **politique de même origine** : le JavaScript d'une page servie par `https://mon-site.fr` ne peut pas lire la réponse d'une requête vers `https://mon-api.fr`, sauf si l'API l'autorise explicitement. C'est le **CORS**. Si ton front-end tourne sur `http://localhost:5173` pendant le développement et que ton API sur `http://localhost:3000`, le navigateur bloquera tout, tant que l'API ne dit pas « cette origine est autorisée ».
+
+On liste les origines autorisées, et **seulement** elles. Mettre une étoile, c'est autoriser tout le monde. Attention à une idée fausse : le CORS protège **le navigateur de tes utilisateurs**, pas ton API. `curl` ou n'importe quel programme l'ignore, et c'est ton authentification qui garde la porte.
+
+Ces deux réglages se placent dans `configurerApp`, la fonction de la partie 6 partagée entre `main.ts` et les tests :
+
+```ts title="src/configurer-app.ts" {5,6}
+import { INestApplication, ValidationPipe } from '@nestjs/common';
+import helmet from 'helmet';
+
+export function configurerApp(app: INestApplication) {
+	app.use(helmet());
+	app.enableCors({ origin: ['http://localhost:5173'] });
+	app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }));
+}
+```
+
+Et leurs tests, dans le même fichier que celui de la limitation :
+
+```ts
+it('ajoute les en-têtes de sécurité de helmet et retire X-Powered-By', async () => {
+	const reponse = await http().get('/api/auth/moi');
+	expect(reponse.headers['x-content-type-options']).toBe('nosniff');
+	expect(reponse.headers['x-powered-by']).toBeUndefined();
+});
+
+it('autorise l\'origine du front, et seulement elle (CORS)', async () => {
+	const autorisee = await http().get('/api/auth/moi').set('Origin', 'http://localhost:5173');
+	expect(autorisee.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+
+	const etrangere = await http().get('/api/auth/moi').set('Origin', 'http://mechant.example');
+	expect(etrangere.headers['access-control-allow-origin']).toBeUndefined();
+});
+```
+
+<Exercices partie={7} de={18} a={20}>
+
+<Exercice numero="7.18" titre="Limiter la connexion">
+Installe `@nestjs/throttler`, active une limite globale de 100 requêtes par minute avec `ThrottlerGuard` en `APP_GUARD`, et une limite de 5 par minute sur l'inscription, la connexion et le renouvellement. Écris le test e2e : cinq mauvaises connexions donnent `401`, la sixième `429`, avec le message `ThrottlerException: Too Many Requests`.
+</Exercice>
+
+<Exercice numero="7.19" titre="Sans casser les autres tests">
+Ajoute la porte de sortie `skipIf` lue dans `process.env.THROTTLE_ACTIF`, la valeur `false` dans `.env.test`, et la réactivation dans le fichier de test des abus. Puis lance toute la suite avec `THROTTLE_ACTIF=true npm run test:e2e` : note combien de tests échouent, avec quels statuts, et explique pourquoi ce sont des `401` et non des `429`.
+</Exercice>
+
+<Exercice numero="7.20" titre="En-têtes et CORS">
+Ajoute `helmet()` et `enableCors` avec l'origine de ton front dans `configurerApp`. Écris les tests : `X-Content-Type-Options: nosniff` présent, `X-Powered-By` absent, l'origine autorisée renvoyée dans `Access-Control-Allow-Origin`, une origine étrangère sans cet en-tête. Vérifie enfin le même comportement avec `curl -i -H "Origin: http://mechant.example" …` sur le serveur lancé, et explique pourquoi cela n'empêcherait pas un script `curl` malveillant d'appeler ton API.
+</Exercice>
+
+</Exercices>

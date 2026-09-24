@@ -1,0 +1,189 @@
+---
+title: "d · Les rôles et la propriété"
+description: "Autoriser selon le rôle de l'utilisateur, et selon ce qui lui appartient."
+projet: loup-garou
+duree: 60
+prerequis: Section c (protéger les routes).
+exercices: 3
+sidebar:
+  order: 4
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Le guard de la section c sait **qui** appelle. Il ne sait pas encore ce que cette personne a le droit de faire : un joueur connecté peut, pour l'instant, faire tout ce que fait un administrateur. C'est le passage de l'authentification à l'**autorisation**, et il faut distinguer deux refus :
+
+- **`401 Unauthorized`** : on ne sait pas qui tu es (pas de jeton, jeton invalide). Malgré son nom, c'est un problème d'identification.
+- **`403 Forbidden`** : on sait qui tu es, et tu n'as pas le droit. Se reconnecter ne changera rien.
+
+## Un décorateur et un guard pour les rôles
+
+Le principe est celui de `@Public()` : un décorateur accroche une information à la route, un guard la lit.
+
+```ts title="src/auth/roles.decorator.ts"
+import { SetMetadata } from '@nestjs/common';
+import type { Role } from '../utilisateurs/utilisateur.entity.js';
+
+export const ROLES_CLE = 'roles';
+export const Roles = (...roles: Role[]) => SetMetadata(ROLES_CLE, roles);
+```
+
+```ts title="src/auth/roles.guard.ts" {16,18,19,20}
+import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import type { Role } from '../utilisateurs/utilisateur.entity.js';
+import { ROLES_CLE } from './roles.decorator.js';
+import type { RequeteAuthentifiee } from './types.js';
+
+@Injectable()
+export class RolesGuard implements CanActivate {
+	constructor(private readonly reflector: Reflector) {}
+
+	canActivate(contexte: ExecutionContext): boolean {
+		const rolesAutorises = this.reflector.getAllAndOverride<Role[] | undefined>(ROLES_CLE, [
+			contexte.getHandler(),
+			contexte.getClass(),
+		]);
+		if (!rolesAutorises) return true;
+
+		const utilisateur = contexte.switchToHttp().getRequest<RequeteAuthentifiee>().utilisateur;
+		if (!utilisateur || !rolesAutorises.includes(utilisateur.role)) {
+			throw new ForbiddenException('Rôle insuffisant');
+		}
+		return true;
+	}
+}
+```
+
+- Ligne 16 : une route sans `@Roles(...)` n'impose aucun rôle : le guard la laisse passer (l'authentification, elle, reste exigée par `AuthGuard`).
+- Lignes 18 à 20 : l'identité rangée sur la requête par `AuthGuard` doit exister **et** avoir un rôle de la liste, sinon `403`.
+
+On l'enregistre à côté du premier, avec `APP_GUARD` :
+
+```ts title="src/auth/auth.module.ts" {4}
+providers: [
+	AuthService,
+	{ provide: APP_GUARD, useClass: AuthGuard },
+	{ provide: APP_GUARD, useClass: RolesGuard },
+],
+```
+
+**L'ordre compte.** Les guards globaux s'exécutent dans l'ordre où ils sont déclarés, et `RolesGuard` lit `requete.utilisateur`, que seul `AuthGuard` remplit. Inverse les deux lignes, et `RolesGuard` passe en premier, ne trouve personne, et refuse tout le monde, administrateurs compris :
+
+```text
+Error: expected 401 "Unauthorized", got 403 "Forbidden"
+Error: expected 200 "OK", got 403 "Forbidden"
+```
+
+Pour réserver une route aux administrateurs, il suffit maintenant de la décorer :
+
+```ts title="src/utilisateurs/utilisateurs.controller.ts"
+@Controller('api/utilisateurs')
+export class UtilisateursController {
+	constructor(private readonly utilisateursService: UtilisateursService) {}
+
+	@Roles('admin')
+	@Get()
+	lister() {
+		return this.utilisateursService.lister();
+	}
+}
+```
+
+Il n'existe volontairement aucune route pour se promouvoir administrateur : ce serait la faille parfaite. Le premier administrateur se crée directement dans la base, ou dans ton script de données de test :
+
+```sql
+UPDATE utilisateurs SET role = 'admin' WHERE pseudo = 'Chef';
+```
+
+## Le rôle est figé dans le jeton
+
+Un point subtil : le rôle que lit `RolesGuard` vient du **jeton**, émis à la connexion. Promeus un joueur administrateur en base, et son jeton actuel continue de dire `joueur` jusqu'à son expiration : il devra se reconnecter pour obtenir un jeton à jour. Inversement, un administrateur rétrogradé garde ses droits jusqu'à l'expiration de son jeton. C'est une raison de plus d'avoir une durée de vie courte, et le compromis à connaître du JWT sans état : on gagne une requête en base à chaque appel, on perd la fraîcheur de l'information.
+
+## Ce qui t'appartient
+
+Le rôle répond à « as-tu le droit de faire ce **type** d'action ? ». Il ne répond pas à « as-tu le droit de la faire sur **cette ressource** ? ». Un joueur peut rejoindre un village, mais seulement pour lui-même.
+
+Regarde la route `rejoindre` de la partie 5 : elle recevait `utilisateurId` dans le corps de la requête. Avec l'authentification, c'est une faille : n'importe quel joueur connecté pourrait inscrire **n'importe qui** dans un village, en changeant ce nombre. La règle est de ne **jamais** faire confiance à une identité fournie par le client quand le serveur la connaît déjà, et le jeton la lui apprend :
+
+```ts title="src/villages/villages.controller.ts" {1,9,11}
+@Roles('admin')
+@Post()
+creer(@Body() dto: CreerVillageDto) { /* … */ }
+
+@Post(':id/rejoindre')
+rejoindre(
+	@Param('id', ParseIntPipe) id: number,
+	@Body() dto: RejoindreVillageDto,
+	@UtilisateurCourant() utilisateur: UtilisateurCourantDonnees,
+) {
+	return this.villagesService.rejoindre(id, utilisateur.id, dto.role);
+}
+```
+
+```ts title="src/villages/dto/rejoindre-village.dto.ts"
+import { IsIn } from 'class-validator';
+
+export class RejoindreVillageDto {
+	@IsIn(['loup-garou', 'villageois', 'voyante'])
+	role: string;
+}
+```
+
+Le village se crée désormais réservé aux administrateurs (ligne 1), et l'identité de celui qui rejoint vient du jeton (lignes 9 et 11). Le DTO ne contient plus `utilisateurId` : grâce à `forbidNonWhitelisted` (partie 4), un client qui essaie quand même de l'envoyer reçoit `property utilisateurId should not exist`.
+
+## Tester
+
+```ts title="test/roles.e2e-spec.ts"
+it('refuse un joueur sur une route réservée aux admins (403)', async () => {
+	await creerCompte('Joueur1');
+	const jeton = await jetonDe('Joueur1');
+	const reponse = await http().get('/api/utilisateurs').set('Authorization', jeton).expect(403);
+	expect(reponse.body.message).toBe('Rôle insuffisant');
+});
+
+it('répond 401, pas 403, à quelqu\'un qui n\'est pas connecté', async () => {
+	await http().get('/api/utilisateurs').expect(401);
+});
+
+it('garde l\'ancien rôle dans un jeton déjà émis, jusqu\'à la prochaine connexion', async () => {
+	await creerCompte('Promu');
+	const ancien = await jetonDe('Promu');
+	await promouvoirAdmin('Promu');
+
+	await http().get('/api/utilisateurs').set('Authorization', ancien).expect(403);
+	const recent = await jetonDe('Promu');
+	await http().get('/api/utilisateurs').set('Authorization', recent).expect(200);
+});
+
+it('inscrit le joueur connecté, jamais celui qu\'on désigne dans le corps', async () => {
+	// … Alice et Bob existent, un village existe
+	await http().post('/api/villages/1/rejoindre').set('Authorization', jetonAlice).send({ role: 'voyante' }).expect(201);
+
+	const reponse = await http().post('/api/villages/1/rejoindre').set('Authorization', jetonBob)
+		.send({ role: 'villageois', utilisateurId: 2 }).expect(400);
+	expect(reponse.body.message).toContain('property utilisateurId should not exist');
+
+	const village = await http().get('/api/villages/1').set('Authorization', jetonBob).expect(200);
+	expect(village.body.participations.map((p: { utilisateur: { pseudo: string } }) => p.utilisateur.pseudo)).toEqual(['Alice']);
+});
+```
+
+`creerCompte`, `jetonDe` et `promouvoirAdmin` sont de petites fonctions du fichier de test : la première inscrit un joueur, la deuxième le connecte et renvoie `Bearer <jeton>`, la troisième change son rôle en base avec un `UPDATE`. Le troisième test documente le compromis de la section précédente : c'est un comportement qu'on choisit d'accepter, autant l'écrire.
+
+<Exercices partie={7} de={12} a={14}>
+
+<Exercice numero="7.12" titre="Trois rôles">
+Ajoute `@Roles()` et `RolesGuard` à ta marketplace, enregistré avec `APP_GUARD` **après** `AuthGuard`. Ajoute `GET /api/comptes`, réservé aux `admin`, qui liste les comptes (sans jamais renvoyer les hachages). Écris les tests e2e : un acheteur reçoit `403`, un visiteur sans jeton reçoit `401` (et pas `403`), un admin reçoit `200`. Passe un compte en admin avec un `UPDATE` SQL, puis reconnecte-toi.
+</Exercice>
+
+<Exercice numero="7.13" titre="L'ordre des guards">
+Inverse les deux `APP_GUARD` et relance les tests e2e. Note les codes obtenus à la place des `401` et des `200` attendus, et explique pourquoi un administrateur est refusé. Remets l'ordre.
+</Exercice>
+
+<Exercice numero="7.14" titre="Ne modifier que ses propres produits">
+Un produit appartient à un vendeur, qui appartient à un compte (ajoute cette relation à `Vendeur`). Ajoute `PATCH /api/produits/:id`, qui renomme un produit : le propriétaire et un `admin` peuvent le faire, un autre vendeur reçoit `403` (`Ce produit ne t'appartient pas`), un produit inconnu `404`. Teste avec deux comptes vendeurs, et avec un troisième passé `admin`. N'accepte aucun identifiant de propriétaire dans le corps de la requête.
+</Exercice>
+
+</Exercices>

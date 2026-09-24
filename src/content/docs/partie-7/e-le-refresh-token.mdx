@@ -1,0 +1,189 @@
+---
+title: "e · Le refresh token"
+description: "Un jeton d'accès court, et un second jeton, renouvelable et révocable, pour en obtenir de nouveaux."
+projet: loup-garou
+duree: 70
+prerequis: Section d (les rôles et la propriété).
+exercices: 3
+sidebar:
+  order: 5
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Le jeton de la section b vit 15 minutes, et il est impossible de l'annuler avant. Cette durée courte est voulue : si quelqu'un le vole, il ne servira pas longtemps. Mais elle pose un problème d'usage : faut-il redemander son mot de passe à un joueur toutes les 15 minutes ? Allonger la durée de vie règle le confort et ruine la sécurité.
+
+La solution consiste à émettre **deux** jetons à la connexion :
+
+- un **jeton d'accès** (*access token*), court (15 minutes), présenté à chaque requête ;
+- un **refresh token**, long (7 jours), qui ne sert qu'à **obtenir une nouvelle paire de jetons** quand l'accès expire. Il voyage rarement (à la connexion et au renouvellement, jamais à chaque requête) et, surtout, **le serveur le garde en mémoire**, sous forme d'empreinte, donc il peut le révoquer.
+
+## Un second secret
+
+Le refresh token est un JWT comme l'autre, mais signé avec un **autre secret**. Un jeton d'accès ne peut alors pas passer pour un refresh token, ni l'inverse : chacun est vérifié avec son propre secret. Ajoute `JWT_REFRESH_SECRET` au `.env`, avec la même contrainte de longueur que `JWT_SECRET` dans la validation d'environnement.
+
+L'empreinte du refresh token va dans l'entité :
+
+```ts title="src/utilisateurs/utilisateur.entity.ts"
+@Column({ type: 'varchar', nullable: true, select: false })
+refreshTokenHache: string | null;
+```
+
+`nullable: true` sert deux fois. La colonne est ajoutée à une table qui contient déjà des lignes (rappel de la partie 5, section d : une colonne obligatoire ferait échouer la migration). Et `null` est justement la valeur qui veut dire « aucune session ouverte ». `type: 'varchar'` est nécessaire pour la même raison que sur le rôle : TypeORM ne devine pas le type d'une union comme `string | null`. Le service gagne deux méthodes :
+
+```ts title="src/utilisateurs/utilisateurs.service.ts"
+definirRefreshToken(id: number, hache: string | null) {
+	return this.utilisateurs.update(id, { refreshTokenHache: hache });
+}
+
+trouverAvecRefreshToken(id: number) {
+	return this.utilisateurs.findOne({
+		where: { id },
+		select: { id: true, pseudo: true, role: true, refreshTokenHache: true },
+	});
+}
+```
+
+## Émettre, renouveler, révoquer
+
+`AuthService` reçoit aussi `ConfigService` (pour lire le second secret). Tout passe par une méthode privée qui fabrique la paire et mémorise l'empreinte du refresh token :
+
+```ts title="src/auth/auth.service.ts" {10,16,17,32,35}
+async connecter(dto: ConnexionDto) {
+	// … vérification du mot de passe, comme en section b
+	return this.emettreJetons(utilisateur);
+}
+
+async rafraichir(refreshToken: string) {
+	const invalide = new UnauthorizedException('Jeton de rafraîchissement invalide');
+	let payload: { sub: number };
+	try {
+		payload = await this.jwt.verifyAsync<{ sub: number }>(refreshToken, { secret: this.config.get<string>('JWT_REFRESH_SECRET') });
+	} catch {
+		throw invalide;
+	}
+
+	const utilisateur = await this.utilisateurs.trouverAvecRefreshToken(payload.sub);
+	if (!utilisateur?.refreshTokenHache || !(await argon2.verify(utilisateur.refreshTokenHache, refreshToken))) {
+		if (utilisateur) await this.utilisateurs.definirRefreshToken(utilisateur.id, null);
+		throw invalide;
+	}
+	return this.emettreJetons(utilisateur);
+}
+
+deconnecter(id: number) {
+	return this.utilisateurs.definirRefreshToken(id, null);
+}
+
+private async emettreJetons(utilisateur: { id: number; pseudo: string; role: Role }) {
+	const [accessToken, refreshToken] = await Promise.all([
+		this.jwt.signAsync({ sub: utilisateur.id, pseudo: utilisateur.pseudo, role: utilisateur.role }),
+		this.jwt.signAsync(
+			{ sub: utilisateur.id },
+			{ secret: this.config.get<string>('JWT_REFRESH_SECRET'), expiresIn: '7d', jwtid: randomUUID() },
+		),
+	]);
+	await this.utilisateurs.definirRefreshToken(utilisateur.id, await argon2.hash(refreshToken));
+	return { accessToken, refreshToken };
+}
+```
+
+- Ligne 10 : la signature et l'expiration du refresh token se vérifient avec **son** secret. Un jeton d'accès, signé avec l'autre, est refusé ici.
+- Ligne 16 : le serveur compare ensuite le jeton reçu à l'empreinte qu'il a gardée. Un refresh token dont la signature est bonne, mais qui n'est plus **le** refresh token en cours de l'utilisateur, est refusé.
+- Ligne 17 : c'est la **détection de réutilisation**. Si quelqu'un présente un ancien refresh token, alors qu'un plus récent a été émis, c'est que le jeton a peut-être été volé. Par prudence, on efface l'empreinte : plus aucun refresh token de cet utilisateur ne marche, il devra se reconnecter.
+- Ligne 32 : `expiresIn: '7d'` pour la durée de vie, et `jwtid: randomUUID()` pour rendre chaque jeton unique (voir plus bas).
+- Ligne 35 : on ne stocke que l'**empreinte** du refresh token, avec argon2, comme un mot de passe. Voler la base ne donne pas de jeton utilisable.
+
+Ce mécanisme s'appelle la **rotation** : chaque renouvellement produit une nouvelle paire, et l'ancien refresh token cesse de valoir. Le contrôleur expose deux routes de plus :
+
+```ts title="src/auth/auth.controller.ts"
+@Public()
+@Post('rafraichir')
+@HttpCode(200)
+rafraichir(@Body() dto: RafraichirDto) {
+	return this.authService.rafraichir(dto.refreshToken);
+}
+
+@Post('deconnexion')
+@HttpCode(204)
+async deconnecter(@UtilisateurCourant() utilisateur: UtilisateurCourantDonnees) {
+	await this.authService.deconnecter(utilisateur.id);
+}
+```
+
+`rafraichir` est publique : son appelant n'a précisément plus de jeton d'accès valable, c'est le refresh token qui joue le rôle d'identité. `deconnexion`, elle, exige un jeton d'accès : elle efface l'empreinte, et le refresh token ne peut plus être échangé. Le jeton d'accès déjà émis, lui, reste valable jusqu'à son expiration : c'est le prix du JWT sans état, et la raison de sa courte durée.
+
+## Le piège des jetons identiques
+
+Pourquoi `jwtid` ? Les dates d'un JWT, `iat` et `exp`, sont en **secondes**. Deux refresh tokens émis pour le même utilisateur dans la même seconde auraient le même contenu, donc la même signature : ils seraient **identiques**. On l'a mesuré : deux `jwt.sign({ sub: 1 }, …)` consécutifs donnent la même chaîne, et avec un `jwtid` aléatoire, deux chaînes différentes. Or la rotation suppose que le nouveau refresh token diffère de l'ancien. Retire `jwtid` et les tests tombent :
+
+```text
+AssertionError: expected 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.…' not to be 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.…'
+```
+
+Pire, l'ancien refresh token, qui devait être refusé après le renouvellement, devient égal au nouveau : la détection de réutilisation ne voit plus rien.
+
+## Tester
+
+Le test unitaire de la section b doit suivre : `AuthService` a une nouvelle dépendance. Oublie de la fournir dans le module de test, et c'est le même message qu'en partie 6 :
+
+```text
+Error: Nest can't resolve dependencies of the AuthService (UtilisateursService, JwtService, ?). Please make sure that the argument ConfigService at index [2] is available in the RootTestModule module.
+```
+
+Ajoute au module de test `{ provide: ConfigService, useValue: config }`, avec un faux `config = { get: vi.fn() }` qui renvoie un secret, et `definirRefreshToken` aux méthodes simulées de `UtilisateursService`. Puis les tests de bout en bout couvrent tout le parcours :
+
+```ts title="test/refresh.e2e-spec.ts"
+it('échange un refresh token contre une nouvelle paire', async () => {
+	const jetons = await connecter();
+	const reponse = await rafraichir(jetons.refreshToken).expect(200);
+	expect(reponse.body.refreshToken).not.toBe(jetons.refreshToken);
+
+	await http().get('/api/auth/moi').set('Authorization', `Bearer ${reponse.body.accessToken}`).expect(200);
+});
+
+it('refuse de réutiliser un refresh token déjà échangé, et révoque la session', async () => {
+	const jetons = await connecter();
+	const suite = await rafraichir(jetons.refreshToken).expect(200);
+
+	await rafraichir(jetons.refreshToken).expect(401);
+	await rafraichir(suite.body.refreshToken).expect(401);
+});
+
+it('refuse un jeton d\'accès à la place d\'un refresh token, et l\'inverse', async () => {
+	const jetons = await connecter();
+	await rafraichir(jetons.accessToken).expect(401);
+	await http().get('/api/auth/moi').set('Authorization', `Bearer ${jetons.refreshToken}`).expect(401);
+});
+
+it('invalide le refresh token à la déconnexion', async () => {
+	const jetons = await connecter();
+	await http().post('/api/auth/deconnexion').set('Authorization', `Bearer ${jetons.accessToken}`).expect(204);
+	await rafraichir(jetons.refreshToken).expect(401);
+});
+```
+
+Le deuxième test montre que la détection de réutilisation est **sévère** : après la tentative avec l'ancien jeton, même le nouveau refresh token, légitime, ne marche plus.
+
+## Les limites de ce mécanisme
+
+On ne garde qu'**une** empreinte par utilisateur, ce qui a deux conséquences. Se connecter sur un second appareil remplace l'empreinte du premier, qui perd sa session. Et si ce premier appareil tente ensuite de renouveler son ancien jeton, la détection de réutilisation efface l'empreinte : le second appareil est déconnecté à son tour. On l'a vérifié : après deux connexions, si l'on tente d'abord le premier refresh token puis le second, les deux répondent `401`. Gérer plusieurs appareils demande une table de sessions, avec une empreinte par appareil : c'est un exercice de conception que ce cours te laisse.
+
+Reste la question du stockage du refresh token côté client : dans une application web, le mettre là où le JavaScript de la page peut le lire (`localStorage`) l'expose au vol par une faille de type XSS. Le cookie `HttpOnly`, illisible depuis la page, est la pratique courante ; c'est un sujet de front-end, hors du périmètre de ce cours.
+
+<Exercices partie={7} de={15} a={17}>
+
+<Exercice numero="7.15" titre="Deux jetons">
+Ajoute `JWT_REFRESH_SECRET` (validé, au moins 32 caractères) et la colonne `refreshTokenHache` (`nullable`, `select: false`, `type: 'varchar'`), avec sa migration. Fais renvoyer `{ accessToken, refreshToken }` par la connexion, en n'enregistrant que l'empreinte du refresh token, et écris `POST /api/auth/rafraichir`, qui renouvelle la paire. Mets à jour le test unitaire du service : oublie d'abord de fournir `ConfigService`, note le message d'erreur, puis corrige.
+</Exercice>
+
+<Exercice numero="7.16" titre="Réutilisation et déconnexion">
+Détecte la réutilisation d'un ancien refresh token (`401`, et empreinte effacée), et ajoute `POST /api/auth/deconnexion` (`204`). Écris les tests e2e : un jeton déjà échangé est refusé et révoque même le nouveau ; un jeton d'accès n'est pas accepté comme refresh token, et un refresh token n'est pas accepté comme `Bearer` ; après la déconnexion, le refresh token est refusé. Vérifie en base que seule l'empreinte est stockée (elle commence par `$argon2id$`).
+</Exercice>
+
+<Exercice numero="7.17" titre="Sans jwtid, exprès">
+Retire `jwtid: randomUUID()` de l'émission du refresh token et relance les tests e2e : note les tests qui échouent, et explique en une phrase pourquoi deux jetons émis dans la même seconde sont identiques. Remets `jwtid`. Vérifie ensuite la limite d'une seule session : connecte le même compte deux fois de suite, tente de renouveler avec le premier refresh token, puis avec le second, et note les deux statuts.
+</Exercice>
+
+</Exercices>
