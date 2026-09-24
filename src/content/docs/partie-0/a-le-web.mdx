@@ -1,0 +1,28 @@
+---
+title: "a · Comment fonctionne le web"
+description: Client, serveur, HTTP et JSON.
+sidebar:
+  order: 1
+---
+
+import Exercices from '../../../components/Exercices.astro';
+
+Quand tu tapes une adresse dans ton navigateur, celui-ci envoie une **requête HTTP** à un serveur. Le serveur répond avec une **réponse HTTP**. Tout le cours repose sur cet échange.
+
+```http
+GET /api/villages HTTP/1.1
+Host: localhost:3000
+Accept: application/json
+```
+
+<Exercices partie={0} de={1} a={2}>
+
+#### 0.1 : Observer une requête
+
+Ouvre les outils de développement de ton navigateur (onglet Réseau) et recharge une page de ton choix. Note la méthode, l'URL et le code de statut de la première requête.
+
+#### 0.2 : Ta première requête à la main
+
+Avec `curl`, récupère `https://api.github.com/users/octocat` et repère les champs `login` et `public_repos` dans le JSON renvoyé.
+
+</Exercices>

@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Accueil NestJS Open</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&amp;family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0;background:#f4f5f8}
+a{color:#b3173a}a:hover{color:#7e0f28}
+</style>
+</helmet>
+<div style="width: 1440px; height: 1680px; box-sizing: border-box; background: #f4f5f8; color: #1b2130; font-family: 'Atkinson Hyperlegible', system-ui, sans-serif; display: flex; flex-direction: column;">
+
+<header style="height: 72px; box-sizing: border-box; padding: 0 64px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #d9dde6; background: #ffffff;">
+<a href="#" style="display: flex; align-items: center; gap: 12px; text-decoration: none; color: #1b2130;">
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="{{accent}}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 5a11 11 0 1 0 5 18A9 9 0 0 1 22 5z"></path><path d="M9 20l3-3 3 3 3-3"></path></svg>
+<span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 22px; letter-spacing: -0.02em;">NestJS Open</span>
+</a>
+<nav style="display: flex; align-items: center; gap: 32px; font-size: 16px;">
+<a href="#" style="color: #1b2130; text-decoration: none;">Le parcours</a>
+<a href="#" style="color: #1b2130; text-decoration: none;">Comment ça marche</a>
+<a href="#" style="color: #1b2130; text-decoration: none;">GitHub</a>
+<button type="button" aria-label="Changer de langue" style="height: 44px; padding: 0 14px; border: 1px solid #d9dde6; background: #ffffff; border-radius: 8px; font: inherit; color: #1b2130;">FR</button>
+<button type="button" aria-label="Passer en mode nuit" style="width: 44px; height: 44px; border: 1px solid #d9dde6; background: #ffffff; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #1b2130;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg></button>
+</nav>
+</header>
+
+<section style="padding: 96px 64px 88px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 72px; align-items: center;">
+<div style="display: flex; flex-direction: column; gap: 28px;">
+<h1 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 76px; line-height: 0.98; letter-spacing: -0.035em;">Apprends le backend en codant un Loup-Garou.</h1>
+<p style="margin: 0; font-size: 21px; line-height: 1.55; color: #3d4557; max-width: 30em;">Un cours gratuit pour apprendre NestJS en partant de zéro. Tu lis, tu codes, et chaque partie ajoute une vraie fonctionnalité au jeu : les rôles, la nuit, les votes, le chat des loups.</p>
+<div style="display: flex; gap: 16px; align-items: center;">
+<a href="Lecon.dc.html" style="height: 56px; padding: 0 28px; display: flex; align-items: center; background: {{accent}}; color: #ffffff; text-decoration: none; border-radius: 10px; font-weight: 700; font-size: 18px;">Commencer la partie 0</a>
+<a href="#" style="height: 56px; padding: 0 20px; display: flex; align-items: center; color: #1b2130; font-size: 18px;">Voir le programme</a>
+</div>
+<p style="margin: 0; font-size: 15px; color: #545d72;">Prérequis : connaître les bases de la programmation (variables, conditions, boucles, fonctions).</p>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 14px;">
+<div style="background: #1b2130; border-radius: 16px; overflow: hidden; box-shadow: 0 24px 48px -24px rgba(27,33,48,0.45);">
+<div style="padding: 16px 24px; border-bottom: 1px solid #2c3448; display: flex; justify-content: space-between; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 14px;">
+<span style="color: #e6e9f2;"><span style="color: #9fd8b5; font-weight: 600;">GET</span> /api/villages/lune-rousse</span>
+<span style="color: #9fd8b5;">200 OK</span>
+</div>
+<div style="padding: 12px 24px; border-bottom: 1px solid #2c3448; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #a3abc0;">Connectée en tant que Clémence</div>
+<pre style="margin: 0; padding: 22px 24px 26px; font-family: 'JetBrains Mono', monospace; font-size: 15px; line-height: 1.7; color: #e6e9f2; white-space: pre;">{
+  <span style="color: #9db2ff;">"phase"</span>: <span style="color: #9fd8b5;">"nuit"</span>,
+  <span style="color: #9db2ff;">"tour"</span>: <span style="color: #ffc27a;">3</span>,
+  <span style="color: #9db2ff;">"joueurs"</span>: [
+    { <span style="color: #9db2ff;">"pseudo"</span>: <span style="color: #9fd8b5;">"Clémence"</span>, <span style="color: #9db2ff;">"role"</span>: <span style="color: #9fd8b5;">"loup-garou"</span> },
+    { <span style="color: #9db2ff;">"pseudo"</span>: <span style="color: #9fd8b5;">"Yanis"</span>,    <span style="color: #9db2ff;">"role"</span>: <span style="color: #ff8fa3;">null</span> },
+    { <span style="color: #9db2ff;">"pseudo"</span>: <span style="color: #9fd8b5;">"Maëlle"</span>,   <span style="color: #9db2ff;">"role"</span>: <span style="color: #ff8fa3;">null</span> },
+    { <span style="color: #9db2ff;">"pseudo"</span>: <span style="color: #9fd8b5;">"Oscar"</span>,    <span style="color: #9db2ff;">"role"</span>: <span style="color: #9fd8b5;">"loup-garou"</span> }
+  ]
+}</pre>
+</div>
+<p style="margin: 0 8px; font-size: 15px; line-height: 1.5; color: #545d72;">Clémence voit l'autre loup, mais pas le rôle des villageois. Le serveur décide de ce que chaque joueur a le droit de savoir : tu coderas ça en partie 8.</p>
+</div>
+</section>
+
+<section style="padding: 72px 64px; background: #ffffff; border-top: 1px solid #d9dde6; border-bottom: 1px solid #d9dde6; display: flex; flex-direction: column; gap: 40px;">
+<div style="display: flex; justify-content: space-between; align-items: flex-end;">
+<h2 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 44px; letter-spacing: -0.02em;">Le parcours</h2>
+<p style="margin: 0; font-size: 17px; color: #545d72; max-width: 34em; text-align: right;">Treize parties, de ta première requête HTTP jusqu'aux microservices. Compte quelques semaines par étape à ton rythme.</p>
+</div>
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px;">
+<sc-for list="{{etapes}}" as="etape" hint-placeholder-count="3">
+<div style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #f4f5f8; border-radius: 14px;">
+<div style="display: flex; flex-direction: column; gap: 4px;">
+<h3 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-size: 24px; font-weight: 700;">{{etape.titre}}</h3>
+<p style="margin: 0; font-size: 15px; color: #545d72;">{{etape.resume}}</p>
+</div>
+<ol style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px;">
+<sc-for list="{{etape.parties}}" as="p" hint-placeholder-count="4">
+<li style="display: flex; align-items: center; gap: 14px; padding: 10px 0; border-bottom: 1px solid #e3e6ee;">
+<span style="width: 34px; height: 34px; flex-shrink: 0; border-radius: 50%; border: 2px solid {{accent}}; color: #1b2130; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600;">{{p.n}}</span>
+<a href="#" style="color: #1b2130; text-decoration: none; font-size: 17px;">{{p.titre}}</a>
+</li>
+</sc-for>
+</ol>
+</div>
+</sc-for>
+</div>
+</section>
+
+<section style="padding: 80px 64px 96px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px;">
+<div style="padding: 36px; background: #ffffff; border: 1px solid #d9dde6; border-radius: 14px; display: flex; flex-direction: column; gap: 14px;">
+<span style="align-self: flex-start; padding: 6px 12px; border-radius: 999px; background: #e6e9f7; color: #2f3d8c; font-size: 14px; font-weight: 700;">Dans le texte du cours</span>
+<h3 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-size: 30px; font-weight: 700;">Le Loup-Garou</h3>
+<p style="margin: 0; font-size: 17px; line-height: 1.6; color: #3d4557;">On le construit ensemble, pas à pas : villages, distribution des rôles, jour et nuit, votes, pouvoirs de la voyante et de la sorcière, chat en temps réel.</p>
+</div>
+<div style="padding: 36px; background: #ffffff; border: 1px solid #d9dde6; border-radius: 14px; display: flex; flex-direction: column; gap: 14px;">
+<span style="align-self: flex-start; padding: 6px 12px; border-radius: 999px; background: #e2f1ec; color: #1d6b55; font-size: 14px; font-weight: 700;">Dans tes exercices</span>
+<h3 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-size: 30px; font-weight: 700;">La marketplace B2B</h3>
+<p style="margin: 0; font-size: 17px; line-height: 1.6; color: #3d4557;">Tu la construis seul, en appliquant chaque notion à un autre domaine : vendeurs, catalogue, panier, commandes. Des tests automatiques te disent quand c'est bon.</p>
+</div>
+</section>
+
+<footer style="margin-top: auto; padding: 32px 64px; border-top: 1px solid #d9dde6; display: flex; justify-content: space-between; font-size: 15px; color: #545d72;">
+<span>Contenu libre, corrections bienvenues sur GitHub.</span>
+<span>Français et English</span>
+</footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#b3173a","options":["#b3173a","#3b4ba0","#1d6b55"]},"$preview":{"width":1440,"height":1680}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      accent: this.props.accent ?? '#b3173a',
+      etapes: [
+        { titre: 'Les bases', resume: 'Avant NestJS : le web, le langage, Node.', parties: [
+          { n: '0', titre: 'Les fondamentaux du web' },
+          { n: '1', titre: 'JavaScript et TypeScript' },
+          { n: '2', titre: 'Node.js et un premier serveur' }
+        ] },
+        { titre: 'NestJS', resume: 'Le cœur du cours, avec le Loup-Garou.', parties: [
+          { n: '3', titre: 'Premiers pas avec NestJS' },
+          { n: '4', titre: 'Valider les données' },
+          { n: '5', titre: 'Base de données' },
+          { n: '6', titre: 'Tester son API' },
+          { n: '7', titre: 'Authentification' },
+          { n: '8', titre: "Le cycle de vie d'une requête" },
+          { n: '9', titre: 'Concevoir une API propre' }
+        ] },
+        { titre: 'En production', resume: 'Déployer, puis passer à l’échelle.', parties: [
+          { n: '10', titre: 'Mise en production' },
+          { n: '11', titre: 'Aller plus loin' },
+          { n: '12', titre: 'Projets de fin de parcours' }
+        ] }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

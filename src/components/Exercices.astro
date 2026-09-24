@@ -1,0 +1,12 @@
+---
+// Bloc d'exercices en fin de section, façon Full Stack Open.
+// Usage MDX : <Exercices partie={3} de={1} a={4}> ... </Exercices>
+interface Props { partie: number; de: number; a: number }
+const { partie, de, a } = Astro.props;
+const lang = Astro.currentLocale ?? 'fr';
+const titre = lang === 'en' ? 'Exercises' : 'Exercices';
+---
+<section class="exercices">
+	<h3>{titre} {partie}.{de}–{partie}.{a}</h3>
+	<slot />
+</section>
