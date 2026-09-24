@@ -1,0 +1,108 @@
+---
+// Un exercice avec sa case « fait ». L'état est gardé dans localStorage
+// (clé par numéro d'exercice, voir src/scripts/progression.ts).
+// Usage MDX : <Exercice numero="8.5" titre="Cacher les prix négociés">Consigne…</Exercice>
+interface Props {
+	numero: string;
+	titre: string;
+}
+const { numero, titre } = Astro.props;
+const id = `exercice-${numero.replace(/[^\w-]/g, '-')}`;
+const separateur = Astro.currentLocale === 'en' ? ': ' : ' : ';
+---
+
+<div class="exercice">
+	<label class="case" for={id}>
+		<input type="checkbox" id={id} data-exercice={numero} autocomplete="off" />
+	</label>
+	<div class="corps">
+		<label class="titre" for={id}><strong>{numero}{separateur}{titre}</strong></label>
+		<div class="consigne"><slot /></div>
+	</div>
+</div>
+
+<script>
+	import { estFait, marquer } from '../scripts/progression';
+
+	function synchroniser() {
+		document.querySelectorAll<HTMLInputElement>('input[data-exercice]').forEach((caseACocher) => {
+			caseACocher.checked = estFait(caseACocher.dataset.exercice ?? '');
+		});
+	}
+
+	document.querySelectorAll<HTMLInputElement>('input[data-exercice]').forEach((caseACocher) => {
+		caseACocher.addEventListener('change', () => {
+			marquer(caseACocher.dataset.exercice ?? '', caseACocher.checked);
+		});
+	});
+	synchroniser();
+	// Autre onglet, ou retour arrière depuis le cache du navigateur.
+	// (Pas de resynchro sur nos propres changements : sans stockage, la case
+	// doit garder l'état que la personne vient de choisir.)
+	window.addEventListener('storage', synchroniser);
+	window.addEventListener('pageshow', (e) => {
+		if (e.persisted) synchroniser();
+	});
+</script>
+
+<style>
+	/* Neutralise les marges automatiques de Starlight entre blocs de contenu. */
+	.exercice,
+	.case,
+	.corps,
+	.corps > * {
+		margin-top: 0 !important;
+	}
+	.exercice {
+		display: flex;
+		gap: 0.5rem;
+		align-items: flex-start;
+		padding-block: 0.75rem;
+		border-bottom: 1px solid var(--nj-separator);
+	}
+	/* Cible tactile de 44 px autour d'une case de 22 px. */
+	.case {
+		flex-shrink: 0;
+		width: 2.75rem;
+		height: 2.75rem;
+		margin: -0.6875rem 0 -0.6875rem -0.6875rem !important;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		cursor: pointer;
+	}
+	input {
+		width: 22px;
+		height: 22px;
+		margin: 0;
+		accent-color: var(--nj-badge-mp-text);
+		cursor: pointer;
+	}
+	input:focus-visible {
+		outline: 2px solid var(--sl-color-accent);
+		outline-offset: 2px;
+	}
+	.corps {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		min-width: 0;
+	}
+	.titre {
+		font-size: 1.0625rem;
+		line-height: 1.4;
+		color: var(--nj-text);
+		cursor: pointer;
+	}
+	.consigne {
+		font-size: 1rem;
+		line-height: 1.55;
+		color: var(--nj-text-2);
+	}
+	.consigne :global(> *) {
+		margin: 0;
+	}
+	.consigne :global(> * + *) {
+		margin-top: 0.5rem;
+	}
+</style>

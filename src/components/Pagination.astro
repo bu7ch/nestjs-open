@@ -1,0 +1,138 @@
+---
+// Liens Précédent / Suivant (surcharge de Pagination).
+// Ordinateur : deux cartes sous la leçon. Mobile (≤ 50rem) : barre fixée en bas, 52 px.
+const { dir, pagination } = Astro.locals.starlightRoute;
+const { prev, next } = pagination;
+const t = Astro.locals.t;
+---
+
+{
+	(prev || next) && (
+		<nav class="nj-pagination print:hidden" dir={dir} aria-label={t('pagination.nav')}>
+			{prev ? (
+				<a href={prev.href} rel="prev" class="prev">
+					<span class="sens">{t('page.previousLink')}</span>
+					<span class="titre">{prev.label}</span>
+				</a>
+			) : (
+				<span class="vide" />
+			)}
+			{next && (
+				<a href={next.href} rel="next" class="next">
+					<span class="sens">
+						<span class="ecran-large">{t('page.nextLink')}</span>
+						<span class="ecran-mobile">{t('pagination.sectionSuivante')}</span>
+					</span>
+					<span class="titre">{next.label}</span>
+				</a>
+			)}
+		</nav>
+	)
+}
+
+<style>
+	.nj-pagination {
+		max-width: 51.25rem;
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 1rem;
+		margin-top: 0.75rem;
+	}
+	a {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		padding: 1.125rem 1.375rem;
+		border: 1px solid var(--nj-border);
+		border-radius: 12px;
+		background: var(--nj-surface);
+		color: var(--nj-text);
+		text-decoration: none;
+		overflow-wrap: anywhere;
+	}
+	a:hover {
+		border-color: var(--sl-color-accent);
+	}
+	.next {
+		grid-column: 2;
+		text-align: end;
+	}
+	.sens {
+		font-size: 0.875rem;
+		color: var(--nj-text-muted);
+	}
+	.titre {
+		font-size: 1.0625rem;
+		font-weight: 700;
+		line-height: 1.35;
+	}
+	.ecran-mobile {
+		display: none;
+	}
+
+	@media (max-width: 50rem) {
+		.nj-pagination {
+			position: fixed;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			z-index: 3;
+			max-width: none;
+			margin: 0;
+			gap: 0.75rem;
+			padding: 0.75rem 1rem calc(1.25rem + env(safe-area-inset-bottom));
+			background: var(--sl-color-bg-nav);
+			border-top: 1px solid var(--nj-border);
+		}
+		/* Un seul lien : il prend toute la largeur. */
+		.nj-pagination:has(.vide) .next,
+		.nj-pagination:not(:has(.next)) .prev {
+			grid-column: 1 / -1;
+		}
+		.vide {
+			display: none;
+		}
+		a {
+			height: 3.25rem;
+			padding: 0 0.75rem;
+			align-items: center;
+			justify-content: center;
+			text-align: center;
+			border-color: var(--nj-control-border);
+			border-radius: 10px;
+			background: transparent;
+		}
+		.next {
+			background: var(--sl-color-accent);
+			border-color: var(--sl-color-accent);
+			color: var(--sl-color-text-invert);
+			font-weight: 700;
+		}
+		.next:hover {
+			background: var(--sl-color-accent-high);
+		}
+		.sens {
+			font-size: 1rem;
+			color: inherit;
+		}
+		/* Le titre de la section reste lu par les lecteurs d'écran. */
+		.titre {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			overflow: hidden;
+			clip: rect(0 0 0 0);
+			white-space: nowrap;
+		}
+		.ecran-large {
+			display: none;
+		}
+		.ecran-mobile {
+			display: inline;
+		}
+		/* Laisse la place à la barre fixe en bas de page. */
+		:global(html:has(.nj-pagination) main) {
+			padding-bottom: calc(6rem + env(safe-area-inset-bottom));
+		}
+	}
+</style>

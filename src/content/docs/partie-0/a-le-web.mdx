@@ -1,11 +1,16 @@
 ---
 title: "a · Comment fonctionne le web"
 description: Client, serveur, HTTP et JSON.
+projet: loup-garou
+duree: 30
+prerequis: Rien de plus que les prérequis du cours. Garde juste un navigateur et un terminal ouverts à côté.
+exercices: 2
 sidebar:
   order: 1
 ---
 
 import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
 
 Quand tu tapes une adresse dans ton navigateur, celui-ci envoie une **requête HTTP** à un serveur. Le serveur répond avec une **réponse HTTP**. Tout le cours repose sur cet échange.
 
@@ -15,14 +20,27 @@ Host: localhost:3000
 Accept: application/json
 ```
 
+Le serveur répond avec un code de statut (`200` : tout va bien) et, ici, du **JSON**. Côté serveur, avec NestJS, la méthode qui produit cette réponse ressemblera à ça. Les deux lignes surlignées font le travail : on lit le village demandé, puis on le renvoie.
+
+```ts title="src/villages/villages.controller.ts" {6,7}
+import { Controller, Get, Param } from '@nestjs/common';
+
+@Controller('api/villages')
+export class VillagesController {
+  @Get(':id')
+  trouverUn(@Param('id') id: string) {
+    return { id, phase: 'nuit', tour: 3 }; // NestJS le transforme en JSON
+  }
+}
+```
+
+Pas de panique : tu écriras ton premier controller en partie 3. Retiens juste l'échange requête puis réponse.
+
 <Exercices partie={0} de={1} a={2}>
-
-#### 0.1 : Observer une requête
-
-Ouvre les outils de développement de ton navigateur (onglet Réseau) et recharge une page de ton choix. Note la méthode, l'URL et le code de statut de la première requête.
-
-#### 0.2 : Ta première requête à la main
-
-Avec `curl`, récupère `https://api.github.com/users/octocat` et repère les champs `login` et `public_repos` dans le JSON renvoyé.
-
+	<Exercice numero="0.1" titre="Observer une requête">
+		Ouvre les outils de développement de ton navigateur (onglet Réseau) et recharge une page de ton choix. Note la méthode, l'URL et le code de statut de la première requête.
+	</Exercice>
+	<Exercice numero="0.2" titre="Ta première requête à la main">
+		Avec `curl`, récupère `https://api.github.com/users/octocat` et repère les champs `login` et `public_repos` dans le JSON renvoyé.
+	</Exercice>
 </Exercices>

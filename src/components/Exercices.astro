@@ -1,12 +1,130 @@
 ---
 // Bloc d'exercices en fin de section, façon Full Stack Open.
-// Usage MDX : <Exercices partie={3} de={1} a={4}> ... </Exercices>
-interface Props { partie: number; de: number; a: number }
+// Usage MDX :
+//   <Exercices partie={8} de={5} a={7}>
+//     <Exercice numero="8.5" titre="Cacher les prix négociés">Consigne…</Exercice>
+//   </Exercices>
+// `projet` : badge affiché (par défaut « marketplace » de la partie 3 à la partie 11).
+// `test` : commande de vérification (par défaut npm run test:partie-N ; false pour la masquer).
+interface Props {
+	partie: number;
+	de: number;
+	a: number;
+	projet?: 'loup-garou' | 'marketplace' | false;
+	test?: string | false;
+}
 const { partie, de, a } = Astro.props;
-const lang = Astro.currentLocale ?? 'fr';
-const titre = lang === 'en' ? 'Exercises' : 'Exercices';
+const projet = Astro.props.projet ?? (partie >= 3 && partie <= 11 ? 'marketplace' : false);
+const test = Astro.props.test ?? `npm run test:partie-${partie}`;
+const t = Astro.locals.t;
+const titre = t('exercices.titre', { count: a - de + 1, de: `${partie}.${de}`, a: `${partie}.${a}` });
+const id = `exercices-${partie}-${de}`;
 ---
-<section class="exercices">
-	<h3>{titre} {partie}.{de}–{partie}.{a}</h3>
-	<slot />
+
+<section class="exercices" aria-labelledby={id}>
+	<div class="entete">
+		<h2 id={id}>{titre}</h2>
+		{projet && <span class:list={['badge', projet]}>{t(`lecon.projet.${projet}`)}</span>}
+	</div>
+	<div class="liste">
+		<slot />
+	</div>
+	{
+		test && (
+			<p class="test not-content">
+				<span class="test-label">{t('exercices.verifier')}</span> <code>{test}</code>
+			</p>
+		)
+	}
 </section>
+
+<style>
+	.exercices {
+		max-width: 51.25rem;
+		margin-block: 2.5rem;
+		padding: 1.75rem 2rem;
+		display: flex;
+		flex-direction: column;
+		gap: 1.125rem;
+		background: var(--nj-surface);
+		border: 2px solid var(--sl-color-accent);
+		border-radius: 14px;
+	}
+	.exercices > * {
+		margin: 0;
+	}
+	.entete {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		flex-wrap: wrap;
+		gap: 0.5rem 1rem;
+	}
+	.entete h2 {
+		margin: 0;
+		font-family: var(--nj-font-titre);
+		font-size: 1.75rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		line-height: 1.2;
+		color: var(--nj-text);
+	}
+	.badge {
+		padding: 0.3125rem 0.75rem;
+		border-radius: 999px;
+		font-size: 0.875rem;
+		font-weight: 700;
+		line-height: 1.4;
+	}
+	.loup-garou {
+		background: var(--nj-badge-lg-bg);
+		color: var(--nj-badge-lg-text);
+	}
+	.marketplace {
+		background: var(--nj-badge-mp-bg);
+		color: var(--nj-badge-mp-text);
+	}
+	.liste {
+		display: flex;
+		flex-direction: column;
+		margin: 0;
+	}
+	.test {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.25rem 0.875rem;
+		margin: 0;
+		padding: 0.875rem 1.125rem;
+		background: var(--nj-code-bg);
+		border-radius: 10px;
+		font-family: var(--sl-font-mono);
+		font-size: 0.875rem;
+		color: #e6e9f2;
+	}
+	.test-label {
+		color: #a3abc0;
+	}
+	.test code {
+		padding: 0;
+		background: none;
+		color: inherit;
+		font-size: inherit;
+	}
+	@media (max-width: 50rem) {
+		.exercices {
+			padding: 1.25rem;
+			gap: 0.75rem;
+		}
+		.entete {
+			flex-direction: column;
+			align-items: flex-start;
+		}
+		.entete h2 {
+			font-size: 1.5rem;
+		}
+		.badge {
+			font-size: 0.8125rem;
+		}
+	}
+</style>

@@ -1,0 +1,94 @@
+---
+// Panneau de réponse d'API à droite du hero : ce que voit Clémence, loup-garou, la nuit.
+// Les données sont du JSON d'exemple : identiques en français et en anglais.
+const joueurs = [
+	{ pseudo: 'Clémence', role: 'loup-garou' },
+	{ pseudo: 'Yanis', role: null },
+	{ pseudo: 'Maëlle', role: null },
+	{ pseudo: 'Oscar', role: 'loup-garou' },
+];
+const largeur = Math.max(...joueurs.map((j) => j.pseudo.length));
+---
+
+<figure class="panneau not-content" aria-label={Astro.locals.t('accueil.panneau.label')}>
+	<div class="carte">
+		<div class="requete">
+			<span><span class="methode">GET</span> /api/villages/lune-rousse</span>
+			<span class="statut">200 OK</span>
+		</div>
+		<div class="session">{Astro.locals.t('accueil.panneau.connexion')}</div>
+		<pre tabindex="0">{'{\n'}  <span class="k">"phase"</span>: <span class="s">"nuit"</span>,
+  <span class="k">"tour"</span>: <span class="n">3</span>,
+  <span class="k">"joueurs"</span>: [
+{joueurs.map((j, i) => (
+	<>{'    { '}<span class="k">"pseudo"</span>: <span class="s">"{j.pseudo}"</span>,{' '.repeat(largeur - j.pseudo.length + 1)}<span class="k">"role"</span>: {j.role ? <span class="s">"{j.role}"</span> : <span class="m">null</span>}{' }'}{i < joueurs.length - 1 ? ',' : ''}{'\n'}</>
+))}  ]
+{'}'}</pre>
+	</div>
+	<figcaption>{Astro.locals.t('accueil.panneau.legende')}</figcaption>
+</figure>
+
+<style>
+	.panneau {
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.875rem;
+		min-width: 0;
+	}
+	.carte {
+		background: var(--nj-code-bg);
+		border-radius: 16px;
+		overflow: hidden;
+		box-shadow: var(--nj-panel-shadow);
+		font-family: var(--sl-font-mono);
+		color: #e6e9f2;
+	}
+	.requete {
+		padding: 1rem 1.5rem;
+		border-bottom: 1px solid #2c3448;
+		display: flex;
+		justify-content: space-between;
+		gap: 1rem;
+		font-size: 0.875rem;
+	}
+	.methode {
+		color: #9fd8b5;
+		font-weight: 600;
+	}
+	.statut {
+		color: #9fd8b5;
+		white-space: nowrap;
+	}
+	.session {
+		padding: 0.75rem 1.5rem;
+		border-bottom: 1px solid #2c3448;
+		font-size: 0.8125rem;
+		color: #a3abc0;
+	}
+	pre {
+		margin: 0;
+		padding: 1.375rem 1.5rem 1.625rem;
+		font-family: inherit;
+		font-size: 0.9375rem;
+		line-height: 1.7;
+		white-space: pre;
+		overflow-x: auto;
+		background: transparent;
+		color: inherit;
+	}
+	pre:focus-visible {
+		outline: 2px solid #ffc27a;
+		outline-offset: -2px;
+	}
+	.k { color: #9db2ff; }
+	.s { color: #9fd8b5; }
+	.n { color: #ffc27a; }
+	.m { color: #ff8fa3; }
+	figcaption {
+		margin: 0 0.5rem;
+		font-size: 0.9375rem;
+		line-height: 1.5;
+		color: var(--nj-text-muted);
+	}
+</style>

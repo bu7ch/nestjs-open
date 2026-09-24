@@ -3,29 +3,29 @@ title: NestJS Open
 description: Un cours en ligne gratuit pour apprendre le développement backend avec NestJS, en partant de zéro.
 template: splash
 hero:
-  tagline: Apprends à construire des API robustes avec NestJS, de ta première requête HTTP jusqu'à la mise en production.
+  title: Apprends le backend en codant un Loup-Garou.
+  tagline: "Un cours gratuit pour apprendre NestJS en partant de zéro. Tu lis, tu codes, et chaque partie ajoute une vraie fonctionnalité au jeu : les rôles, la nuit, les votes, le chat des loups."
   actions:
-    - text: Commencer le cours
+    - text: Commencer la partie 0
       link: /partie-0/
-      icon: right-arrow
-    - text: Comment ça marche
-      link: /a-propos/
+    - text: Voir le programme
+      link: '#le-parcours'
       variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import Parcours from '../../components/accueil/Parcours.astro';
+import Projets from '../../components/accueil/Projets.astro';
+import Projet from '../../components/accueil/Projet.astro';
 
-<CardGrid>
-	<Card title="Du texte, pas des vidéos" icon="open-book">
-		Chaque partie se lit à ton rythme, l'éditeur ouvert à côté. Tu codes en même temps que tu lis.
-	</Card>
-	<Card title="Deux projets en parallèle" icon="puzzle">
-		Le cours construit le backend d'un Loup-Garou en ligne. Toi, tu construis une marketplace B2B dans les exercices.
-	</Card>
-	<Card title="Des tests pour te vérifier" icon="approve-check">
-		Chaque série d'exercices est livrée avec des tests automatiques qui te disent si tu as réussi.
-	</Card>
-	<Card title="Ouvert et gratuit" icon="github">
-		Le contenu est sur GitHub. Une faute, une explication floue ? Propose une correction.
-	</Card>
-</CardGrid>
+<Parcours titre="Le parcours">
+	Treize parties, de ta première requête HTTP jusqu'aux microservices. Compte quelques semaines par étape à ton rythme.
+</Parcours>
+
+<Projets>
+	<Projet projet="loup-garou" badge="Dans le texte du cours" titre="Le Loup-Garou">
+		On le construit ensemble, pas à pas : villages, distribution des rôles, jour et nuit, votes, pouvoirs de la voyante et de la sorcière, chat en temps réel.
+	</Projet>
+	<Projet projet="marketplace" badge="Dans tes exercices" titre="La marketplace B2B">
+		Tu la construis seul, en appliquant chaque notion à un autre domaine : vendeurs, catalogue, panier, commandes. Des tests automatiques te disent quand c'est bon.
+	</Projet>
+</Projets>

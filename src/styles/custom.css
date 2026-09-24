@@ -1,18 +1,221 @@
-/* Accent inspiré du rouge NestJS, ajusté pour le contraste. */
+/*
+ * NestJS Open : thème « Loup-Garou ».
+ * Le mode sombre s'appelle Nuit (:root), le mode clair Jour (:root[data-theme='light']).
+ * Les valeurs viennent de HANDOFF.md / design/*.dc.html.
+ */
+
+/* ---------- Nuit (par défaut) ---------- */
 :root {
-	--sl-color-accent-low: #3d0f1a;
-	--sl-color-accent: #e0234e;
-	--sl-color-accent-high: #ffc9d4;
+	--sl-font: 'Atkinson Hyperlegible', system-ui, sans-serif;
+	--sl-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+	--nj-font-titre: 'Bricolage Grotesque Variable', 'Atkinson Hyperlegible', system-ui, sans-serif;
+
+	/* Échelle de gris Starlight (white = le plus contrasté, black = le fond) */
+	--sl-color-white: #e6e9f2;
+	--sl-color-gray-1: #e6e9f2;
+	--sl-color-gray-2: #d5d9e4;
+	--sl-color-gray-3: #a3abc0;
+	--sl-color-gray-4: #6f7890;
+	--sl-color-gray-5: #3a4359;
+	--sl-color-gray-6: #1b2236;
+	--sl-color-black: #141a2a;
+
+	--sl-color-accent-low: #3d1624;
+	--sl-color-accent: #ff6b86;
+	--sl-color-accent-high: #ff8fa3;
+
+	--sl-color-text: #d5d9e4;
+	--sl-color-text-accent: #ff8fa3;
+	--sl-color-text-invert: #141a2a;
+	--sl-color-bg: #141a2a;
+	--sl-color-bg-nav: #1b2236;
+	--sl-color-bg-sidebar: #1b2236;
+	--sl-color-bg-inline-code: #232b40;
+	--sl-color-bg-accent: #ff6b86;
+	--sl-color-hairline-light: #2c3448;
+	--sl-color-hairline: #2c3448;
+	--sl-color-hairline-shade: #2c3448;
+
+	/* Jetons maison */
+	--nj-surface: #1b2236;
+	--nj-border: #2c3448;
+	--nj-control-border: #3a4359;
+	--nj-separator: #2c3448;
+	--nj-text: #e6e9f2;
+	--nj-text-2: #d5d9e4;
+	--nj-text-muted: #a3abc0;
+	--nj-accent-hover: #ffc2cd;
+	--nj-badge-lg-bg: #28305a;
+	--nj-badge-lg-text: #c9d2ff;
+	--nj-badge-mp-bg: #173d33;
+	--nj-badge-mp-text: #9fd8b5;
+	--nj-code-bg: #0f1422;
+	--nj-code-border: #2c3448;
+	--nj-panel-shadow: 0 24px 48px -24px rgba(0, 0, 0, 0.6);
+	--nj-pastille-bord: #4a536b;
+	--nj-valide: #9fd8b5;
+	--nj-valide-texte: #141a2a;
+
+	/* Mise en page */
+	--sl-sidebar-width: 20rem;
+	--sl-content-width: 47.5rem;
+	--sl-line-height: 1.7;
+	--sl-line-height-headings: 1.1;
 }
+
+/* ---------- Jour ---------- */
 :root[data-theme='light'] {
-	--sl-color-accent-low: #ffd9e1;
-	--sl-color-accent: #b8163b;
-	--sl-color-accent-high: #5c0a1d;
+	--sl-color-white: #1b2130;
+	--sl-color-gray-1: #1b2130;
+	--sl-color-gray-2: #3d4557;
+	--sl-color-gray-3: #545d72;
+	--sl-color-gray-4: #8a92a6;
+	--sl-color-gray-5: #d9dde6;
+	--sl-color-gray-6: #e3e6ee;
+	--sl-color-gray-7: #f4f5f8;
+	--sl-color-black: #ffffff;
+
+	--sl-color-accent-low: #fbe7ec;
+	--sl-color-accent: #b3173a;
+	--sl-color-accent-high: #7e0f28;
+
+	--sl-color-text: #1b2130;
+	--sl-color-text-accent: #b3173a;
+	--sl-color-text-invert: #ffffff;
+	--sl-color-bg: #f4f5f8;
+	--sl-color-bg-nav: #ffffff;
+	--sl-color-bg-sidebar: #ffffff;
+	--sl-color-bg-inline-code: #e8eaf0;
+	--sl-color-bg-accent: #b3173a;
+	--sl-color-hairline-light: #e3e6ee;
+	--sl-color-hairline: #d9dde6;
+	--sl-color-hairline-shade: #d9dde6;
+
+	--nj-surface: #ffffff;
+	--nj-border: #d9dde6;
+	--nj-control-border: #d9dde6;
+	--nj-separator: #e3e6ee;
+	--nj-text: #1b2130;
+	--nj-text-2: #3d4557;
+	--nj-text-muted: #545d72;
+	--nj-accent-hover: #7e0f28;
+	--nj-badge-lg-bg: #e6e9f7;
+	--nj-badge-lg-text: #2f3d8c;
+	--nj-badge-mp-bg: #e2f1ec;
+	--nj-badge-mp-text: #1d6b55;
+	--nj-code-bg: #1b2130;
+	--nj-panel-shadow: 0 24px 48px -24px rgba(27, 33, 48, 0.45);
+	--nj-pastille-bord: #c3c8d4;
+	--nj-valide: #1d6b55;
+	--nj-valide-texte: #ffffff;
 }
-.exercices {
-	border: 2px solid var(--sl-color-accent);
-	border-radius: 0.5rem;
-	padding: 1rem 1.25rem;
-	margin-block: 2rem;
+
+@media (min-width: 50em) {
+	:root {
+		--sl-nav-height: 4.5rem;
+		--sl-nav-pad-x: 2rem;
+	}
 }
-.exercices > h3:first-child { margin-top: 0; color: var(--sl-color-accent-high); }
+
+/* ---------- Typographie ---------- */
+h1,
+h2,
+h3,
+h4,
+.sl-markdown-content :is(h1, h2, h3, h4) {
+	font-family: var(--nj-font-titre);
+	letter-spacing: -0.02em;
+}
+h1#_top {
+	font-weight: 800;
+	letter-spacing: -0.03em;
+	line-height: 1.05;
+}
+.sl-markdown-content :is(h2, h3) {
+	font-weight: 700;
+}
+/* Texte des leçons : 18 px / 1.7, pour la lisibilité. */
+.sl-markdown-content {
+	font-size: var(--sl-text-lg);
+	line-height: 1.7;
+}
+.sl-markdown-content code:not(:where(.not-content *, .expressive-code *)) {
+	font-size: 0.85em;
+	padding: 0.125rem 0.375rem;
+	border-radius: 4px;
+}
+.sl-markdown-content a:not(:where(.not-content *)):hover,
+.site-title:hover {
+	color: var(--nj-accent-hover);
+}
+
+/* ---------- Header ---------- */
+.header .site-title {
+	gap: 0.75rem;
+	color: var(--nj-text);
+	font-family: var(--nj-font-titre);
+	font-weight: 800;
+	font-size: 1.25rem;
+	letter-spacing: -0.02em;
+}
+.header .site-title img {
+	height: 1.875rem;
+}
+/* Recherche : champ gris clair bordé, 44 px. */
+site-search > button[data-open-modal] {
+	height: 2.75rem;
+	border: 1px solid var(--nj-control-border);
+	border-radius: 8px;
+	background: var(--sl-color-bg);
+	color: var(--nj-text-muted);
+}
+/* Sélecteur de langue : même gabarit que les autres contrôles. */
+starlight-lang-select label {
+	height: 2.75rem;
+	padding-inline: 0.625rem;
+	border: 1px solid var(--nj-control-border);
+	border-radius: 8px;
+	background: var(--sl-color-bg-nav);
+	color: var(--nj-text);
+}
+starlight-lang-select select {
+	height: 100%;
+}
+.right-group {
+	gap: 0.75rem !important;
+}
+
+/* ---------- Blocs de code ---------- */
+.expressive-code .frame .header .title {
+	font-weight: 400;
+}
+/* Bloc avec titre de fichier : barre de titre pleine largeur, bouton Copier dedans. */
+.expressive-code .frame.has-title .header {
+	min-height: 2.75rem;
+	align-items: center;
+	padding-inline-end: 3.5rem;
+	border-bottom: 1px solid var(--nj-code-border);
+}
+.expressive-code .frame.has-title .header .title {
+	padding-inline: 1.25rem;
+}
+.expressive-code .frame.has-title .copy {
+	inset-block-start: 0.25rem !important;
+}
+/* Bouton Copier toujours visible dans la barre de titre ; ailleurs, au survol comme avant. */
+.expressive-code .copy button {
+	width: 2.25rem !important;
+	height: 2.25rem !important;
+	border-radius: 6px !important;
+}
+.expressive-code .frame.has-title .copy button {
+	opacity: 1 !important;
+}
+
+/* ---------- Page d'accueil (splash avec hero) ---------- */
+html[data-has-hero]:not([data-has-sidebar]) {
+	--sl-content-width: 82rem;
+}
+html[data-has-hero] .content-panel {
+	padding-inline: clamp(1rem, 4vw, 4rem);
+}

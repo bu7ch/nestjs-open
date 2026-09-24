@@ -1,0 +1,58 @@
+---
+// Barre de progression de lecture (4 px sous le header), mobile uniquement.
+// Décorative : la position dans la page est déjà connue des lecteurs d'écran.
+---
+
+<div class="lecture" aria-hidden="true"><div class="lecture-barre"></div></div>
+
+<script>
+	// Le conteneur de contenu de Starlight crée un contexte de « containment » :
+	// on rattache la barre au <body> pour que position: fixed se cale sur l'écran.
+	const lecture = document.querySelector<HTMLElement>('.lecture');
+	if (lecture) document.body.append(lecture);
+	const barre = lecture?.querySelector<HTMLElement>('.lecture-barre');
+	let enAttente = false;
+	function maj() {
+		enAttente = false;
+		if (!barre) return;
+		const max = document.documentElement.scrollHeight - window.innerHeight;
+		const ratio = max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0;
+		barre.style.transform = `scaleX(${ratio})`;
+	}
+	function planifier() {
+		if (!enAttente) {
+			enAttente = true;
+			requestAnimationFrame(maj);
+		}
+	}
+	window.addEventListener('scroll', planifier, { passive: true });
+	window.addEventListener('resize', planifier);
+	maj();
+</script>
+
+<style>
+	.lecture {
+		display: none;
+	}
+	@media (max-width: 50rem) {
+		.lecture {
+			display: block;
+			position: fixed;
+			top: var(--sl-nav-height);
+			left: 0;
+			right: 0;
+			height: 4px;
+			background: var(--nj-border);
+			z-index: var(--sl-z-index-navbar);
+		}
+		.lecture-barre {
+			height: 100%;
+			background: var(--sl-color-accent);
+			transform: scaleX(0);
+			transform-origin: left;
+		}
+		:global([dir='rtl']) .lecture-barre {
+			transform-origin: right;
+		}
+	}
+</style>

@@ -1,0 +1,58 @@
+---
+// Carte d'un des deux projets fil rouge.
+// Usage MDX : <Projet projet="loup-garou" badge="Dans le texte du cours" titre="Le Loup-Garou">…</Projet>
+interface Props {
+	projet: 'loup-garou' | 'marketplace';
+	badge: string;
+	titre: string;
+}
+const { projet, badge, titre } = Astro.props;
+---
+
+<article class="projet not-content">
+	<span class:list={['badge', projet]}>{badge}</span>
+	<h3>{titre}</h3>
+	<div class="texte"><slot /></div>
+</article>
+
+<style>
+	.projet {
+		padding: 2.25rem;
+		background: var(--nj-surface);
+		border: 1px solid var(--nj-border);
+		border-radius: 14px;
+		display: flex;
+		flex-direction: column;
+		gap: 0.875rem;
+	}
+	.badge {
+		align-self: flex-start;
+		padding: 0.375rem 0.75rem;
+		border-radius: 999px;
+		font-size: 0.875rem;
+		font-weight: 700;
+	}
+	.loup-garou {
+		background: var(--nj-badge-lg-bg);
+		color: var(--nj-badge-lg-text);
+	}
+	.marketplace {
+		background: var(--nj-badge-mp-bg);
+		color: var(--nj-badge-mp-text);
+	}
+	h3 {
+		margin: 0;
+		font-family: var(--nj-font-titre);
+		font-size: 1.875rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		color: var(--nj-text);
+	}
+	.texte,
+	.texte :global(p) {
+		margin: 0;
+		font-size: 1.0625rem;
+		line-height: 1.6;
+		color: var(--nj-text-2);
+	}
+</style>

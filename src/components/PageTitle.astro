@@ -1,0 +1,106 @@
+---
+// Titre de leçon (surcharge de PageTitle) : badges projet / durée / exercices
+// et encadré « Avant de commencer » tirés du frontmatter.
+import LectureProgression from './LectureProgression.astro';
+
+const { data } = Astro.locals.starlightRoute.entry;
+const { projet, duree, exercices, prerequis } = data;
+const t = Astro.locals.t;
+const aDesBadges = Boolean(projet || duree || exercices);
+---
+
+<div class="titre-lecon">
+	<h1 id="_top">{data.title}</h1>
+	{
+		aDesBadges && (
+			<ul class="badges">
+				{projet && <li class:list={['badge', 'projet', projet]}>{t(`lecon.projet.${projet}`)}</li>}
+				{duree && <li class="badge">{t('lecon.duree', { minutes: duree })}</li>}
+				{exercices ? <li class="badge">{t('lecon.exercices', { count: exercices })}</li> : null}
+			</ul>
+		)
+	}
+</div>
+{
+	prerequis && (
+		<aside class="prerequis" aria-label={t('lecon.avantDeCommencer')}>
+			<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2z" /><path d="M8 7h6" /></svg>
+			<p><strong>{t('lecon.avantDeCommencer')}</strong> {prerequis}</p>
+		</aside>
+	)
+}
+{Astro.locals.starlightRoute.hasSidebar && <LectureProgression />}
+
+<style>
+	.titre-lecon {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+		margin-top: 1rem;
+	}
+	h1 {
+		margin: 0;
+		font-family: var(--nj-font-titre);
+		font-weight: 800;
+		font-size: clamp(2.125rem, 1.4rem + 2.2vw, 3rem);
+		line-height: 1.05;
+		letter-spacing: -0.03em;
+		color: var(--nj-text);
+	}
+	.badges {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.625rem;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+	.badge {
+		margin: 0;
+		padding: 0.3125rem 0.75rem;
+		border-radius: 999px;
+		border: 1px solid var(--nj-control-border);
+		background: var(--nj-surface);
+		color: var(--nj-text-2);
+		font-size: 0.875rem;
+		line-height: 1.4;
+	}
+	.projet {
+		border-color: transparent;
+		font-weight: 700;
+	}
+	.loup-garou {
+		background: var(--nj-badge-lg-bg);
+		color: var(--nj-badge-lg-text);
+	}
+	.marketplace {
+		background: var(--nj-badge-mp-bg);
+		color: var(--nj-badge-mp-text);
+	}
+	.prerequis {
+		max-width: 47.5rem;
+		display: flex;
+		gap: 1rem;
+		align-items: flex-start;
+		padding: 1.125rem 1.375rem;
+		background: var(--nj-surface);
+		border: 1px solid var(--nj-border);
+		border-radius: 12px;
+		color: var(--nj-text);
+	}
+	.prerequis svg {
+		flex-shrink: 0;
+		margin-top: 0.125rem;
+		color: var(--nj-badge-lg-text);
+	}
+	.prerequis p {
+		margin: 0;
+		font-size: 1rem;
+		line-height: 1.55;
+	}
+	@media (max-width: 50rem) {
+		.badge {
+			font-size: 0.8125rem;
+		}
+	}
+</style>

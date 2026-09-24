@@ -16,8 +16,14 @@ Cours en ligne gratuit pour apprendre NestJS en partant de zéro, sur le modèle
 ## Site
 
 - Français par défaut à la racine (`src/content/docs/`), anglais sous `src/content/docs/en/`. Une page absente en anglais retombe sur le français.
-- Les parties sont déclarées dans le tableau `parties` de `astro.config.mjs`.
-- Composant d'exercices : `src/components/Exercices.astro`.
+- Les parties sont déclarées dans le tableau `parties` de `src/parties.mjs` (partagé par la sidebar et l'accueil, avec le regroupement en étapes).
+- Composant d'exercices : `src/components/Exercices.astro` + `Exercice.astro` (une case à cocher par exercice, état dans `localStorage`, clé `nestjs-open:exercice:<numéro>`) :
+
+      <Exercices partie={8} de={5} a={7}>
+        <Exercice numero="8.5" titre="Cacher les prix négociés">Consigne…</Exercice>
+      </Exercices>
+
+- Frontmatter des leçons (badges et encadré sous le titre) : `projet` (`loup-garou` | `marketplace`), `duree` (minutes), `prerequis` (texte court), `exercices` (nombre). **`exercices` doit correspondre au nombre de `<Exercice>` de la page** : la sidebar s'en sert pour savoir quand une partie est terminée.
 - Maquettes validées : `design/*.dc.html`. Ce sont des exports d'un outil de maquette : lire le HTML et les styles inline comme référence visuelle, ignorer `support.js`, la syntaxe `{{…}}`, `<sc-for>`, `<sc-if>` et le bloc `<script type="text/x-dc">` (qui contient seulement les données d'exemple).
 - Tâche en cours : voir `HANDOFF.md`.
 

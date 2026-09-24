@@ -3,29 +3,29 @@ title: NestJS Open
 description: A free online course to learn backend development with NestJS, from scratch.
 template: splash
 hero:
-  tagline: Learn to build solid APIs with NestJS, from your first HTTP request all the way to production.
+  title: Learn backend development by coding a Werewolf game.
+  tagline: "A free course to learn NestJS from scratch. You read, you code, and every part adds a real feature to the game: roles, the night, votes, the wolves' chat."
   actions:
-    - text: Start the course
+    - text: Start part 0
       link: /en/partie-0/
-      icon: right-arrow
-    - text: How it works
-      link: /en/a-propos/
+    - text: See the syllabus
+      link: '#le-parcours'
       variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import Parcours from '../../../components/accueil/Parcours.astro';
+import Projets from '../../../components/accueil/Projets.astro';
+import Projet from '../../../components/accueil/Projet.astro';
 
-<CardGrid>
-	<Card title="Text, not videos" icon="open-book">
-		Each part is read at your own pace, with your editor open. You code as you read.
-	</Card>
-	<Card title="Two projects side by side" icon="puzzle">
-		The course builds an online Werewolf game backend. You build a B2B marketplace in the exercises.
-	</Card>
-	<Card title="Tests to check yourself" icon="approve-check">
-		Every set of exercises ships with automated tests that tell you when you got it right.
-	</Card>
-	<Card title="Open and free" icon="github">
-		The content lives on GitHub. Found a typo or an unclear explanation? Suggest a fix.
-	</Card>
-</CardGrid>
+<Parcours titre="The path">
+	Thirteen parts, from your first HTTP request all the way to microservices. Allow a few weeks per stage, at your own pace.
+</Parcours>
+
+<Projets>
+	<Projet projet="loup-garou" badge="In the course text" titre="The Werewolf game">
+		We build it together, step by step: villages, dealing roles, day and night, votes, the seer's and the witch's powers, real-time chat.
+	</Projet>
+	<Projet projet="marketplace" badge="In your exercises" titre="The B2B marketplace">
+		You build it on your own, applying each concept to another domain: sellers, catalog, cart, orders. Automated tests tell you when you got it right.
+	</Projet>
+</Projets>

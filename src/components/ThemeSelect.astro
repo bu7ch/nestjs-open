@@ -1,0 +1,96 @@
+---
+// Bascule jour/nuit. Remplace le <select> Clair/Sombre/Auto de Starlight.
+// Le thème initial (choix enregistré, sinon prefers-color-scheme) est posé par
+// le ThemeProvider de Starlight avant l'affichage : pas de flash.
+// Le libellé et l'icône visibles dépendent de html[data-theme], en CSS pur.
+---
+
+<nj-theme-toggle>
+	<button type="button" class="nj-theme-toggle">
+		<span class="vers-nuit">
+			<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg>
+			<span class="sr-only">{Astro.locals.t('theme.versNuit')}</span>
+		</span>
+		<span class="vers-jour">
+			<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
+			<span class="sr-only">{Astro.locals.t('theme.versJour')}</span>
+		</span>
+	</button>
+</nj-theme-toggle>
+
+<script>
+	type Theme = 'dark' | 'light';
+
+	/** Même clé que Starlight, pour que son ThemeProvider relise le choix au chargement. */
+	const storageKey = 'starlight-theme';
+
+	function loadTheme(): Theme | null {
+		try {
+			const t = localStorage.getItem(storageKey);
+			return t === 'light' || t === 'dark' ? t : null;
+		} catch {
+			return null;
+		}
+	}
+
+	function storeTheme(theme: Theme): void {
+		try {
+			localStorage.setItem(storageKey, theme);
+		} catch {
+			// Stockage indisponible : le thème reste valable jusqu'au rechargement.
+		}
+	}
+
+	const systemTheme = (): Theme =>
+		matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+
+	// Tant que la personne n'a rien choisi, on suit le système.
+	matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+		if (!loadTheme()) document.documentElement.dataset.theme = systemTheme();
+	});
+
+	class NjThemeToggle extends HTMLElement {
+		connectedCallback() {
+			this.querySelector('button')?.addEventListener('click', () => {
+				const next: Theme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+				document.documentElement.dataset.theme = next;
+				storeTheme(next);
+			});
+		}
+	}
+	if (!customElements.get('nj-theme-toggle')) customElements.define('nj-theme-toggle', NjThemeToggle);
+</script>
+
+<style>
+	nj-theme-toggle {
+		display: contents;
+	}
+	.nj-theme-toggle {
+		width: 2.75rem;
+		height: 2.75rem;
+		flex-shrink: 0;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+		border: 1px solid var(--nj-control-border);
+		border-radius: 8px;
+		background: var(--sl-color-bg-nav);
+		color: var(--sl-color-white);
+		cursor: pointer;
+	}
+	.nj-theme-toggle:hover {
+		border-color: var(--sl-color-accent);
+	}
+	.nj-theme-toggle > span {
+		display: inline-flex;
+	}
+	/* Nuit : on propose le jour (soleil). Jour : on propose la nuit (lune). */
+	:global(:root[data-theme='light']) .vers-jour,
+	:global(:root:not([data-theme='light'])) .vers-nuit {
+		display: none;
+	}
+	.vers-jour {
+		color: #ffc27a;
+	}
+</style>

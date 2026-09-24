@@ -1,0 +1,120 @@
+// @ts-check
+import { defineEcConfig, ExpressiveCodeTheme } from '@astrojs/starlight/expressive-code';
+
+// Couleurs des blocs de code : identiques en jour et en nuit, seul le fond change
+// (variable --nj-code-bg définie dans src/styles/custom.css).
+const c = {
+	fond: '#1b2130',
+	texte: '#e6e9f2',
+	motCle: '#ff8fa3',
+	type: '#9db2ff',
+	chaine: '#9fd8b5',
+	nombre: '#ffc27a',
+	commentaire: '#8c95ab',
+	bordure: '#2c3448',
+	discret: '#a3abc0',
+};
+
+const loupGarou = new ExpressiveCodeTheme({
+	name: 'loup-garou',
+	type: 'dark',
+	colors: {
+		'editor.background': c.fond,
+		'editor.foreground': c.texte,
+	},
+	tokenColors: [
+		{ scope: ['comment', 'punctuation.definition.comment'], settings: { foreground: c.commentaire } },
+		{
+			scope: [
+				'keyword',
+				'storage',
+				'storage.type',
+				'storage.modifier',
+				'constant.language',
+				'meta.decorator',
+				'punctuation.decorator',
+				'entity.name.function.decorator',
+				'keyword.operator.new',
+				'keyword.operator.expression',
+				'variable.language',
+			],
+			settings: { foreground: c.motCle },
+		},
+		{
+			scope: [
+				'entity.name.type',
+				'entity.name.class',
+				'entity.other.inherited-class',
+				'support.type',
+				'support.class',
+				'support.type.property-name',
+				'meta.object-literal.key',
+				'entity.name.tag',
+				'keyword.other.http',
+				'variable.other.property.http',
+				'entity.other.attribute-name',
+			],
+			settings: { foreground: c.type },
+		},
+		{ scope: ['string', 'string.quoted', 'string.template', 'markup.inline.raw'], settings: { foreground: c.chaine } },
+		{ scope: ['constant.numeric', 'constant.other.number'], settings: { foreground: c.nombre } },
+		{ scope: ['keyword.operator', 'punctuation', 'meta.brace'], settings: { foreground: c.texte } },
+	],
+});
+
+export default defineEcConfig({
+	themes: [loupGarou],
+	// Un seul thème : pas de bascule clair/sombre côté Expressive Code.
+	useStarlightDarkModeSwitch: false,
+	useStarlightUiThemeColors: false,
+	styleOverrides: {
+		borderRadius: '12px',
+		borderColor: 'transparent',
+		codeBackground: 'var(--nj-code-bg)',
+		codeFontFamily: "'JetBrains Mono', ui-monospace, monospace",
+		codeFontSize: '0.9375rem',
+		codeLineHeight: '1.75',
+		codePaddingBlock: '1.25rem',
+		codePaddingInline: '1.25rem',
+		uiFontFamily: "'JetBrains Mono', ui-monospace, monospace",
+		uiFontSize: '0.8125rem',
+		focusBorder: '#ffc27a',
+		scrollbarThumbColor: 'rgba(163,171,192,0.35)',
+		scrollbarThumbHoverColor: 'rgba(163,171,192,0.6)',
+		textMarkers: {
+			markBackground: 'rgba(255,194,122,0.1)',
+			markBorderColor: c.nombre,
+			lineMarkerAccentWidth: '3px',
+			lineMarkerAccentMargin: '0',
+		},
+		frames: {
+			shadowColor: 'transparent',
+			frameBoxShadowCssValue: 'none',
+			editorBackground: 'var(--nj-code-bg)',
+			editorTabBarBackground: 'var(--nj-code-bg)',
+			editorActiveTabBackground: 'var(--nj-code-bg)',
+			editorActiveTabForeground: c.discret,
+			editorActiveTabBorderColor: 'transparent',
+			editorActiveTabIndicatorTopColor: 'transparent',
+			editorActiveTabIndicatorBottomColor: 'transparent',
+			editorActiveTabIndicatorHeight: '0px',
+			editorTabBorderRadius: '0',
+			editorTabBarBorderColor: 'transparent',
+			editorTabBarBorderBottomColor: 'transparent',
+			terminalBackground: 'var(--nj-code-bg)',
+			terminalTitlebarBackground: 'var(--nj-code-bg)',
+			terminalTitlebarForeground: c.discret,
+			terminalTitlebarBorderBottomColor: c.bordure,
+			terminalTitlebarDotsForeground: '#3a4359',
+			terminalTitlebarDotsOpacity: '1',
+			inlineButtonForeground: c.texte,
+			inlineButtonBackground: 'transparent',
+			inlineButtonBackgroundIdleOpacity: '0',
+			inlineButtonBackgroundHoverOrFocusOpacity: '0.12',
+			inlineButtonBorder: '#3a4359',
+			inlineButtonBorderOpacity: '1',
+			tooltipSuccessBackground: '#1d6b55',
+			tooltipSuccessForeground: '#ffffff',
+		},
+	},
+});

@@ -1,0 +1,163 @@
+---
+// « Le parcours » : les 13 parties regroupées en 3 étapes (src/parties.mjs).
+// Usage MDX : <Parcours titre="Le parcours">Texte d'introduction…</Parcours>
+import { parties, etapes } from '../../parties.mjs';
+
+interface Props {
+	titre: string;
+}
+const { titre } = Astro.props;
+const lang = Astro.currentLocale === 'en' ? 'en' : 'fr';
+const prefixe = lang === 'en' ? '/en' : '';
+---
+
+<section class="parcours not-content" id="le-parcours" aria-labelledby="le-parcours-titre">
+	<div class="entete">
+		<h2 id="le-parcours-titre">{titre}</h2>
+		<div class="intro"><slot /></div>
+	</div>
+	<div class="etapes">
+		{
+			etapes.map((etape) => (
+				<div class="etape">
+					<div class="etape-entete">
+						<h3>{etape[lang].titre}</h3>
+						<p>{etape[lang].resume}</p>
+					</div>
+					<ol>
+						{parties.slice(etape.de, etape.a + 1).map(([dir, fr, en], i) => (
+							<li>
+								<span class="numero" aria-hidden="true">{etape.de + i}</span>
+								<a href={`${prefixe}/${dir}/`}>
+									<span class="sr-only">{lang === 'en' ? 'Part' : 'Partie'} {etape.de + i} : </span>
+									{lang === 'en' ? en : fr}
+								</a>
+							</li>
+						))}
+					</ol>
+				</div>
+			))
+		}
+	</div>
+</section>
+
+<style>
+	/* Bandeau pleine largeur : le fond déborde du conteneur centré. */
+	.parcours {
+		position: relative;
+		padding-block: 4.5rem;
+		display: flex;
+		flex-direction: column;
+		gap: 2.5rem;
+		background: var(--nj-surface);
+		/* Fond et filets débordent en peinture seulement : pas de défilement horizontal. */
+		box-shadow: 0 0 0 100vmax var(--nj-surface);
+		clip-path: inset(0 -100vmax);
+		border-block: 1px solid transparent;
+		border-image: linear-gradient(var(--nj-border) 0 0) 1 / 1px 0 / 0 100vmax;
+	}
+	.entete {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-end;
+		gap: 2rem;
+		flex-wrap: wrap;
+	}
+	h2 {
+		margin: 0;
+		font-family: var(--nj-font-titre);
+		font-weight: 700;
+		font-size: clamp(2.25rem, 1.5rem + 2vw, 2.75rem);
+		letter-spacing: -0.02em;
+		line-height: 1.1;
+		color: var(--nj-text);
+	}
+	.intro,
+	.intro :global(p) {
+		margin: 0;
+	}
+	.intro {
+		font-size: 1.0625rem;
+		color: var(--nj-text-muted);
+		max-width: 34em;
+		text-align: end;
+	}
+	.etapes {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 2rem;
+		align-items: start;
+	}
+	.etape {
+		display: flex;
+		flex-direction: column;
+		gap: 1.125rem;
+		padding: 1.75rem;
+		background: var(--sl-color-bg);
+		border-radius: 14px;
+	}
+	.etape-entete {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+	h3 {
+		margin: 0;
+		font-family: var(--nj-font-titre);
+		font-size: 1.5rem;
+		font-weight: 700;
+		color: var(--nj-text);
+	}
+	.etape-entete p {
+		margin: 0;
+		font-size: 0.9375rem;
+		color: var(--nj-text-muted);
+	}
+	ol {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	li {
+		display: flex;
+		align-items: center;
+		gap: 0.875rem;
+		min-height: 2.75rem;
+		padding-block: 0.375rem;
+		border-bottom: 1px solid var(--nj-separator);
+	}
+	.numero {
+		width: 2.125rem;
+		height: 2.125rem;
+		flex-shrink: 0;
+		border-radius: 50%;
+		border: 2px solid var(--sl-color-accent);
+		color: var(--nj-text);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-family: var(--sl-font-mono);
+		font-size: 0.875rem;
+		font-weight: 600;
+	}
+	li a {
+		color: var(--nj-text);
+		text-decoration: none;
+		font-size: 1.0625rem;
+	}
+	li a:hover {
+		color: var(--sl-color-text-accent);
+		text-decoration: underline;
+	}
+	@media (max-width: 62rem) {
+		.etapes {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.intro {
+			text-align: start;
+		}
+	}
+</style>

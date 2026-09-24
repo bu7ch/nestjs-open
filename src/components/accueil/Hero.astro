@@ -1,0 +1,103 @@
+---
+// Hero de la page d'accueil (surcharge du composant Hero de Starlight).
+// Titre, sous-titre et boutons viennent du frontmatter `hero` de index.mdx ;
+// la ligne de prérequis et la légende du panneau viennent des traductions.
+import PanneauApi from './PanneauApi.astro';
+
+const { data } = Astro.locals.starlightRoute.entry;
+const { title = data.title, tagline, actions = [] } = data.hero || {};
+---
+
+<div class="accueil-hero not-content">
+	<div class="texte">
+		<h1 id="_top" data-page-title set:html={title} />
+		{tagline && <p class="tagline" set:html={tagline} />}
+		{
+			actions.length > 0 && (
+				<div class="actions">
+					{actions.map(({ link, text, variant }) => (
+						<a href={link} class:list={['action', variant === 'minimal' ? 'secondaire' : 'principale']}>
+							{text}
+						</a>
+					))}
+				</div>
+			)
+		}
+		<p class="prerequis">{Astro.locals.t('accueil.prerequis')}</p>
+	</div>
+	<PanneauApi />
+</div>
+
+<style>
+	.accueil-hero {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 4.5rem;
+		align-items: center;
+		padding-block: 4.5rem 4rem;
+	}
+	.texte {
+		display: flex;
+		flex-direction: column;
+		gap: 1.75rem;
+	}
+	h1 {
+		margin: 0;
+		font-family: var(--nj-font-titre);
+		font-weight: 800;
+		font-size: clamp(2.75rem, 1rem + 4.2vw, 4.75rem);
+		line-height: 0.98;
+		letter-spacing: -0.035em;
+		color: var(--nj-text);
+	}
+	.tagline {
+		margin: 0;
+		font-size: 1.3125rem;
+		line-height: 1.55;
+		color: var(--nj-text-2);
+		max-width: 30em;
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1rem;
+		align-items: center;
+	}
+	.action {
+		min-height: 3.5rem;
+		display: inline-flex;
+		align-items: center;
+		font-size: 1.125rem;
+		border-radius: 10px;
+	}
+	.principale {
+		padding: 0 1.75rem;
+		background: var(--sl-color-accent);
+		color: var(--sl-color-text-invert);
+		font-weight: 700;
+		text-decoration: none;
+	}
+	.principale:hover {
+		background: var(--sl-color-accent-high);
+		color: var(--sl-color-text-invert);
+	}
+	.secondaire {
+		padding: 0 1.25rem;
+		color: var(--nj-text);
+	}
+	.secondaire:hover {
+		color: var(--sl-color-text-accent);
+	}
+	.prerequis {
+		margin: 0;
+		font-size: 0.9375rem;
+		color: var(--nj-text-muted);
+	}
+	@media (max-width: 62rem) {
+		.accueil-hero {
+			grid-template-columns: minmax(0, 1fr);
+			gap: 3rem;
+			padding-block: 2.5rem 3rem;
+		}
+	}
+</style>

@@ -1,0 +1,192 @@
+---
+// Liste de la sidebar, reprise de SidebarSublist de Starlight, avec une pastille
+// numérotée devant chaque partie (groupe dont les pages sont sous /partie-N/).
+import type { StarlightRouteData } from '@astrojs/starlight/route-data';
+import SidebarRestorePoint from '@astrojs/starlight/components/SidebarRestorePoint.astro';
+
+type Entree = StarlightRouteData['sidebar'][number];
+interface Props {
+	sublist: Entree[];
+	nested?: boolean;
+}
+const { sublist, nested } = Astro.props;
+const t = Astro.locals.t;
+
+const liens = (entrees: Entree[]): Extract<Entree, { type: 'link' }>[] =>
+	entrees.flatMap((e) => (e.type === 'link' ? [e] : liens(e.entries)));
+const numeroDePartie = (entrees: Entree[]) => {
+	for (const lien of liens(entrees)) {
+		const m = /\/partie-(\d+)\//.exec(lien.href);
+		if (m) return Number(m[1]);
+	}
+	return undefined;
+};
+---
+
+<ul class:list={{ 'top-level': !nested, nested }}>
+	{
+		sublist.map((entry) => {
+			if (entry.type === 'link') {
+				return (
+					<li>
+						<a href={entry.href} aria-current={entry.isCurrent ? 'page' : undefined} {...entry.attrs}>
+							{entry.label}
+						</a>
+					</li>
+				);
+			}
+			const courante = liens(entry.entries).some((l) => l.isCurrent);
+			const partie = numeroDePartie(entry.entries);
+			return (
+				<li>
+					<details open={courante || !entry.collapsed}>
+						<summary class:list={{ courante }}>
+							{partie !== undefined && (
+								<span class="pastille" data-partie={partie}>
+									<span class="numero" aria-hidden="true">{partie}</span>
+									<svg class="coche" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+								</span>
+							)}
+							<span class="libelle">
+								{partie !== undefined && <span class="sr-only">{partie} · </span>}
+								{entry.label}
+								{partie !== undefined && <span class="sr-only etat-terminee">, {t('progression.terminee')}</span>}
+							</span>
+							<svg class="caret" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg>
+						</summary>
+						<SidebarRestorePoint />
+						<Astro.self sublist={entry.entries} nested />
+					</details>
+				</li>
+			);
+		})
+	}
+</ul>
+
+<style>
+	ul {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+	.top-level {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	summary {
+		min-height: 2.75rem;
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 0.5rem 0.75rem;
+		border-radius: 8px;
+		color: var(--nj-text);
+		font-size: 0.9375rem;
+		line-height: 1.3;
+		cursor: pointer;
+		user-select: none;
+	}
+	summary::marker,
+	summary::-webkit-details-marker {
+		display: none;
+	}
+	summary:hover {
+		background: var(--sl-color-bg);
+	}
+	summary.courante {
+		background: var(--sl-color-accent-low);
+		font-weight: 700;
+	}
+	.libelle {
+		flex-grow: 1;
+	}
+	.caret {
+		flex-shrink: 0;
+		color: var(--nj-text-muted);
+		transition: transform 0.2s ease-in-out;
+	}
+	[open] > summary .caret {
+		transform: rotate(90deg);
+	}
+	:global([dir='rtl']) .caret {
+		transform: rotate(180deg);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.caret {
+			transition: none;
+		}
+	}
+
+	/* Pastille de partie : numéro, bord accent si courante, pleine verte si terminée. */
+	.pastille {
+		width: 26px;
+		height: 26px;
+		flex-shrink: 0;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: 50%;
+		border: 1.5px solid var(--nj-pastille-bord);
+		background: var(--nj-surface);
+		color: var(--nj-text);
+		font-family: var(--sl-font-mono);
+		font-size: 0.75rem;
+		font-weight: 600;
+	}
+	.courante .pastille {
+		border-color: var(--sl-color-accent);
+	}
+	.coche,
+	.etat-terminee {
+		display: none;
+	}
+	.pastille:global(.terminee) {
+		background: var(--nj-valide);
+		border-color: var(--nj-valide);
+		color: var(--nj-valide-texte);
+	}
+	.pastille:global(.terminee) .numero {
+		display: none;
+	}
+	.pastille:global(.terminee) .coche {
+		display: block;
+	}
+	summary:has(.pastille:global(.terminee)) .etat-terminee {
+		display: inline;
+	}
+
+	/* Sections d'une partie. */
+	.nested {
+		margin: 0.25rem 0 0.5rem 1.625rem;
+		padding-inline-start: 0.875rem;
+		border-inline-start: 2px solid var(--nj-separator);
+	}
+	.nested a {
+		min-height: 2.25rem;
+		display: flex;
+		align-items: center;
+		padding-block: 0.25rem;
+		font-size: 0.875rem;
+		line-height: 1.3;
+		color: var(--nj-text-2);
+		text-decoration: none;
+	}
+	.nested a:hover {
+		color: var(--sl-color-text-accent);
+	}
+	.nested a[aria-current='page'] {
+		color: var(--sl-color-text-accent);
+		font-weight: 700;
+	}
+	/* Liens de premier niveau (« À propos »…) hors groupe. */
+	.top-level > li > a {
+		min-height: 2.75rem;
+		display: flex;
+		align-items: center;
+		padding: 0.5rem 0.75rem;
+		border-radius: 8px;
+		color: var(--nj-text);
+		text-decoration: none;
+	}
+</style>

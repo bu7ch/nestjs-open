@@ -1,0 +1,145 @@
+---
+// Sidebar (surcharge) : progression en haut, puis les parties avec une pastille
+// (numéro, ou coche verte quand tous les exercices de la partie sont cochés).
+// Les totaux d'exercices par partie viennent du frontmatter `exercices` des pages
+// françaises ; le décompte des cases cochées se fait côté client (localStorage).
+import { getCollection } from 'astro:content';
+import MobileMenuFooter from '@astrojs/starlight/components/MobileMenuFooter.astro';
+import SidebarPersister from '@astrojs/starlight/components/SidebarPersister.astro';
+import SidebarListe from './SidebarListe.astro';
+import { parties } from '../parties.mjs';
+
+const { sidebar } = Astro.locals.starlightRoute;
+const t = Astro.locals.t;
+
+const totaux: Record<number, number> = {};
+for (const page of await getCollection('docs')) {
+	const m = /^partie-(\d+)\//.exec(page.id);
+	if (m) totaux[Number(m[1])] = (totaux[Number(m[1])] ?? 0) + (page.data.exercices ?? 0);
+}
+const nbParties = parties.length;
+// Gabarits des phrases, complétés côté client (__N__ = nombre calculé).
+const gabarits = {
+	partiesOne: t('progression.parties', { count: 1, n: '__N__', total: nbParties }),
+	partiesOther: t('progression.parties', { count: 2, n: '__N__', total: nbParties }),
+	exercicesOne: t('progression.exercices', { count: 1, n: '__N__' }),
+	exercicesOther: t('progression.exercices', { count: 2, n: '__N__' }),
+};
+const resumeInitial = `${gabarits.partiesOther.replace('__N__', '0')}, ${gabarits.exercicesOther.replace('__N__', '0')}`;
+---
+
+<nj-progression
+	class="progression"
+	data-totaux={JSON.stringify(totaux)}
+	data-nb-parties={nbParties}
+	data-gabarits={JSON.stringify(gabarits)}
+>
+	<span class="progression-titre" id="nj-progression-titre">{t('progression.titre')}</span>
+	<div
+		class="jauge"
+		role="progressbar"
+		aria-labelledby="nj-progression-titre"
+		aria-valuemin="0"
+		aria-valuemax={nbParties}
+		aria-valuenow="0"
+	>
+		<div class="jauge-remplie"></div>
+	</div>
+	<span class="progression-resume" aria-live="polite">{resumeInitial}</span>
+</nj-progression>
+
+<SidebarPersister>
+	<nav aria-label={t('progression.nav')}>
+		<SidebarListe sublist={sidebar} />
+	</nav>
+</SidebarPersister>
+
+<div class="md:sl-hidden">
+	<MobileMenuFooter />
+</div>
+
+<script>
+	import { faitsParPartie, EVENEMENT } from '../scripts/progression';
+
+	class NjProgression extends HTMLElement {
+		connectedCallback() {
+			this.maj();
+			window.addEventListener(EVENEMENT, () => this.maj());
+			window.addEventListener('storage', () => this.maj());
+			window.addEventListener('pageshow', () => this.maj());
+		}
+
+		maj() {
+			const totaux: Record<string, number> = JSON.parse(this.dataset.totaux ?? '{}');
+			const nbParties = Number(this.dataset.nbParties ?? 0);
+			const g = JSON.parse(this.dataset.gabarits ?? '{}');
+			const faits = faitsParPartie();
+
+			let terminees = 0;
+			let valides = 0;
+			document.querySelectorAll<HTMLElement>('.pastille[data-partie]').forEach((pastille) => {
+				const partie = Number(pastille.dataset.partie);
+				const total = totaux[partie] ?? 0;
+				const nbFaits = Math.min(faits.get(partie) ?? 0, total);
+				const terminee = total > 0 && nbFaits >= total;
+				pastille.classList.toggle('terminee', terminee);
+			});
+			for (const [partie, total] of Object.entries(totaux)) {
+				const nbFaits = Math.min(faits.get(Number(partie)) ?? 0, total);
+				valides += nbFaits;
+				if (total > 0 && nbFaits >= total) terminees++;
+			}
+
+			const regles = new Intl.PluralRules(document.documentElement.lang || 'fr');
+			const phrase = (un: string, plusieurs: string, n: number) =>
+				(regles.select(n) === 'one' ? un : plusieurs).replace('__N__', String(n));
+			const resume = this.querySelector('.progression-resume');
+			if (resume) {
+				resume.textContent = `${phrase(g.partiesOne, g.partiesOther, terminees)}, ${phrase(g.exercicesOne, g.exercicesOther, valides)}`;
+			}
+			const jauge = this.querySelector<HTMLElement>('.jauge');
+			jauge?.setAttribute('aria-valuenow', String(terminees));
+			jauge?.setAttribute('aria-valuetext', resume?.textContent ?? '');
+			const remplie = this.querySelector<HTMLElement>('.jauge-remplie');
+			if (remplie) remplie.style.width = `${nbParties ? (terminees / nbParties) * 100 : 0}%`;
+		}
+	}
+	if (!customElements.get('nj-progression')) customElements.define('nj-progression', NjProgression);
+</script>
+
+<style>
+	.progression {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		padding: 0.25rem 0.75rem 1rem;
+		margin-bottom: 0.5rem;
+		border-bottom: 1px solid var(--nj-separator);
+	}
+	.progression-titre {
+		font-size: 0.875rem;
+		color: var(--nj-text-muted);
+	}
+	.jauge {
+		height: 8px;
+		border-radius: 4px;
+		background: var(--nj-separator);
+		overflow: hidden;
+	}
+	.jauge-remplie {
+		width: 0;
+		height: 100%;
+		background: var(--sl-color-accent);
+		transition: width 0.3s ease;
+	}
+	.progression-resume {
+		font-size: 0.875rem;
+		line-height: 1.4;
+		color: var(--nj-text);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.jauge-remplie {
+			transition: none;
+		}
+	}
+</style>
