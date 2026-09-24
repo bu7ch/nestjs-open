@@ -1,0 +1,83 @@
+---
+title: "g · Projet bonus : un mini-dashboard NBA"
+description: "Un projet autonome sur un troisième thème, pour vérifier d'un seul tenant tout ce que tu as appris depuis la partie 0."
+duree: 90
+prerequis: Section f (point d'étape). Section bonus, non nécessaire pour la suite du cours.
+exercices: 6
+sidebar:
+  order: 7
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Jusqu'ici, tu as suivi le Loup-Garou dans le texte du cours et la marketplace dans tes exercices. Ce projet bonus change de thème — une API sur le **basketball NBA** — et te laisse le construire seul, du premier module jusqu'à la configuration validée. Rien de nouveau à apprendre : uniquement ce que tu as vu depuis la partie 0, assemblé dans un seul projet.
+
+Comme le reste du cours n'a pas encore abordé les bases de données, tout reste en mémoire, dans des tableaux à l'intérieur de tes services — exactement comme `VillagesService` ou `ProduitsService` jusqu'ici. La partie 5 remplacera ça par une vraie base ; pas besoin de l'attendre pour ce projet.
+
+## Le point de départ
+
+Crée un nouveau projet NestJS (section a de la partie 3), avec un module `equipes` (`npx nest g resource equipes` génère module, controller et service d'un coup — choisis « REST API » et refuse de générer les endpoints CRUD tout faits, tu les écriras toi-même).
+
+Une équipe a un identifiant, un nom, une ville et une conférence :
+
+```ts title="src/equipes/equipes.service.ts"
+import { Injectable } from '@nestjs/common';
+
+export interface Equipe {
+	id: number;
+	nom: string;
+	ville: string;
+	conference: 'Est' | 'Ouest';
+}
+
+@Injectable()
+export class EquipesService {
+	private readonly equipes: Equipe[] = [
+		{ id: 1, nom: 'Celtics', ville: 'Boston', conference: 'Est' },
+		{ id: 2, nom: 'Lakers', ville: 'Los Angeles', conference: 'Ouest' },
+		{ id: 3, nom: 'Bucks', ville: 'Milwaukee', conference: 'Est' },
+		{ id: 4, nom: 'Nuggets', ville: 'Denver', conference: 'Ouest' },
+	];
+
+	trouverTous(): Equipe[] {
+		return this.equipes;
+	}
+
+	trouverUne(id: number): Equipe | undefined {
+		return this.equipes.find((equipe) => equipe.id === id);
+	}
+}
+```
+
+À partir de là, le reste — le controller, les autres routes, le module des joueurs — est à toi, guidé par les exercices ci-dessous.
+
+<Exercices partie={4} de={17} a={22} projet={false}>
+
+<Exercice numero="4.17" titre="Les équipes">
+Termine `EquipesController` : `GET /api/equipes` renvoie la liste, `GET /api/equipes/:id` renvoie une équipe précise. Applique `ParseIntPipe` sur `:id`, et renvoie une `NotFoundException` si l'identifiant ne correspond à aucune équipe.
+</Exercice>
+
+<Exercice numero="4.18" titre="Les joueurs, et le lien vers leur équipe">
+Crée un module `joueurs`, sur le même modèle : un tableau en mémoire de joueurs (`id`, `prenom`, `nom`, `poste`, `equipeId`). Injecte `EquipesService` dans `JoueursService` (exporte-le depuis `EquipesModule`, importe `EquipesModule` dans `JoueursModule`) pour que `GET /api/joueurs/:id` renvoie le joueur avec son équipe complète imbriquée, pas juste son `equipeId`. `404` si le joueur n'existe pas.
+</Exercice>
+
+<Exercice numero="4.19" titre="Filtrer par poste">
+Écris `PosteValidePipe`, sur le modèle de `RoleValidePipe` (partie 4, section c), avec les cinq postes du basketball (`meneur`, `arriere`, `ailier`, `ailier-fort`, `pivot`). Ajoute `GET /api/joueurs/poste/:poste` qui l'utilise, et renvoie les joueurs de ce poste, toutes équipes confondues.
+</Exercice>
+
+<Exercice numero="4.20" titre="Ajouter un joueur, validé">
+Écris `CreerJoueurDto` : `prenom` et `nom` (`@IsString() @IsNotEmpty()`), `poste` (`@IsIn([...])` avec les cinq postes de l'exercice précédent), `equipeId` (`@IsInt()`). Active `ValidationPipe` globalement avec `whitelist: true` et `forbidNonWhitelisted: true`. `POST /api/joueurs` crée un joueur si le DTO est valide, et si `equipeId` correspond à une équipe existante (sinon, `BadRequestException`).
+</Exercice>
+
+<Exercice numero="4.21" titre="Une limite par défaut">
+Ajoute `?limite=...` à `GET /api/joueurs`, avec `DefaultValuePipe(5)` combiné à `ParseIntPipe`, pour ne renvoyer que les `limite` premiers joueurs. Vérifie que l'appeler sans paramètre renvoie 5 joueurs, et qu'avec `?limite=2` seuls deux sont renvoyés.
+</Exercice>
+
+<Exercice numero="4.22" titre="Un nombre maximum de joueurs, configuré et validé">
+Installe `@nestjs/config`. Crée un `.env` avec `PORT` et `NOMBRE_MAX_JOUEURS`. Injecte `ConfigService` dans `JoueursService`, et refuse la création d'un joueur (`BadRequestException`) si le nombre de joueurs existants a atteint `NOMBRE_MAX_JOUEURS`. Ajoute `validerEnvironnement` (partie 4, section d) à `ConfigModule.forRoot`, avec `NOMBRE_MAX_JOUEURS` à la place de `NOMBRE_MAX_VILLAGES`. Retire la variable du `.env` pour vérifier que le serveur refuse de démarrer, puis remets-la.
+</Exercice>
+
+</Exercices>
+
+Si tes six exercices passent, tu as reconstruit — seul, sur un thème inédit — l'essentiel de ce que les parties 0 à 4 t'ont enseigné : un serveur HTTP, des modules qui s'injectent entre eux, et des données validées avant qu'elles n'atteignent ton code métier.

@@ -1,0 +1,100 @@
+---
+title: "f · Point d'étape : quiz"
+description: "Treize questions pour vérifier ce que tu retiens des parties 0 à 4, avant le projet bonus."
+duree: 15
+prerequis: Les parties 0 à 4.
+sidebar:
+  order: 6
+---
+
+Tu as couvert le web, JavaScript et TypeScript, un serveur Node fait main, Express, puis tes premiers pas avec NestJS et la validation. Avant le projet bonus qui suit, treize questions pour vérifier ce qui est resté. Essaie de répondre avant d'ouvrir chaque réponse.
+
+## Partie 0 — les fondamentaux du web
+
+<details>
+<summary><strong>1.</strong> Ton navigateur envoie <code>GET /api/villages</code> et le serveur traite la requête sans problème. Quel code de statut HTTP reçoit-il ?</summary>
+
+`200`. C'est le code générique de succès — tu en croiseras d'autres plus loin dans le cours (`201` à la création, `400` en cas de requête invalide, `404` si la ressource n'existe pas).
+</details>
+
+<details>
+<summary><strong>2.</strong> Une méthode de controller NestJS renvoie <code>\{ id, phase: 'nuit', tour: 3 \}</code>. Que doit faire ton code pour que ce soit envoyé en JSON au client ?</summary>
+
+Rien de plus : NestJS sérialise automatiquement en JSON tout objet JavaScript renvoyé par une méthode de controller.
+</details>
+
+## Partie 1 — JavaScript et TypeScript
+
+<details>
+<summary><strong>3.</strong> Quelle est la différence entre <code>let</code> et <code>const</code> ?</summary>
+
+`const` empêche de réassigner la variable (`x = autreChose` est refusé), `let` le permet. Ni l'un ni l'autre ne rend un objet ou un tableau immuable : <code>const village = \{ nom: 'A' \}; village.nom = 'B'</code> est parfaitement valide.
+</details>
+
+<details>
+<summary><strong>4.</strong> Tu attends trois requêtes indépendantes avec trois <code>await</code> à la suite, plutôt qu'avec <code>Promise.all</code>. Quelle est la conséquence ?</summary>
+
+Les trois requêtes s'enchaînent l'une après l'autre au lieu de partir en même temps — ton code attend trois fois plus longtemps qu'il ne le faudrait, sans aucune erreur pour te le signaler.
+</details>
+
+<details>
+<summary><strong>5.</strong> À quoi sert une <code>interface</code> TypeScript comme <code>interface Joueur \{ pseudo: string; role: Role \}</code> ?</summary>
+
+Elle décrit la forme qu'un objet doit avoir — uniquement à la compilation. Elle ne génère aucun code, ne vérifie rien à l'exécution, et ne peut donc jamais remplacer une vraie validation comme celle de la partie 4.
+</details>
+
+<details>
+<summary><strong>6.</strong> Un décorateur de classe comme <code>@Journal()</code> ci-dessus (partie 1, section d) s'exécute-t-il à la déclaration de la classe, ou à chaque fois qu'on en crée une instance avec <code>new</code> ?</summary>
+
+À la **déclaration** — une seule fois, au chargement du fichier. `@Controller(...)` ou `@Injectable()` suivent exactement le même principe : NestJS les lit pour assembler ton application, pas à chaque requête.
+</details>
+
+## Partie 2 — Node.js et Express
+
+<details>
+<summary><strong>7.</strong> Quelle est la différence entre <code>app.use(middleware)</code> et <code>app.get(chemin, gestionnaire)</code> ?</summary>
+
+`app.use` s'applique à **toutes** les requêtes, dans l'ordre où tu l'ajoutes. `app.get` ne répond qu'à une route précise, en `GET`.
+</details>
+
+<details>
+<summary><strong>8.</strong> Un middleware Express oublie d'appeler <code>next()</code> et ne répond pas non plus lui-même. Que se passe-t-il ?</summary>
+
+La requête reste bloquée indéfiniment : rien n'a été renvoyé au client, et rien n'a transmis la main au middleware ou à la route suivante.
+</details>
+
+## Partie 3 — premiers pas avec NestJS
+
+<details>
+<summary><strong>9.</strong> Dans <code>@Module(\{ controllers: [...], providers: [VillagesService], exports: [VillagesService] \})</code>, à quoi sert <code>exports</code> ?</summary>
+
+Sans lui, `VillagesService` reste invisible en dehors de son propre module — même un module qui l'`imports` ne pourrait pas l'injecter. `exports` le rend disponible pour les autres modules.
+</details>
+
+<details>
+<summary><strong>10.</strong> <code>VillagesController</code> reçoit <code>VillagesService</code> par son constructeur. Qui appelle réellement <code>new VillagesService()</code> ?</summary>
+
+NestJS lui-même — jamais toi. C'est le principe de l'injection de dépendances : tu déclares ce dont ta classe a besoin, le framework se charge de le construire et de le fournir.
+</details>
+
+## Partie 4 — valider les données
+
+<details>
+<summary><strong>11.</strong> Ton DTO a bien <code>@IsInt() @Min(3) nombreDeJoueurs: number</code>, mais tu obtiens toujours un <code>201</code> même avec <code>nombreDeJoueurs: 1</code>. Qu'as-tu probablement oublié ?</summary>
+
+D'activer `app.useGlobalPipes(new ValidationPipe())` dans `main.ts`. Les décorateurs décrivent les règles ; sans `ValidationPipe`, rien ne les fait respecter à l'exécution.
+</details>
+
+<details>
+<summary><strong>12.</strong> Que change <code>forbidNonWhitelisted: true</code> par rapport à <code>whitelist: true</code> seul ?</summary>
+
+`whitelist: true` seul retire silencieusement les champs absents du DTO. En ajoutant `forbidNonWhitelisted: true`, ces champs en trop font échouer la requête avec un `400`, au lieu d'être ignorés sans prévenir personne.
+</details>
+
+<details>
+<summary><strong>13.</strong> Pourquoi valider les variables d'environnement au démarrage (avec <code>validate</code> dans <code>ConfigModule.forRoot</code>), plutôt que de laisser <code>ConfigService.get('NOMBRE_MAX_VILLAGES')</code> renvoyer <code>undefined</code> ?</summary>
+
+Un `.env` incomplet plante sinon bien plus tard, au premier endroit où la valeur manquante est utilisée — potentiellement en pleine requête d'un vrai utilisateur. Valider au démarrage fait échouer immédiatement, avec un message qui nomme la variable en cause.
+</details>
+
+Si la plupart de ces réponses te semblaient familières, le projet bonus qui suit est fait pour toi : une petite API sur le thème du basketball NBA, à construire avec exactement ce que tu viens de réviser.

@@ -22,3 +22,5 @@ En partie 3, `@Body()` acceptait n'importe quoi : le type TypeScript que tu lui 
 - **c.** Les pipes : la mécanique générale derrière la validation.
 - **d.** Gérer la configuration : `.env`, `ConfigService`, et la valider elle aussi.
 - **e. (bonus)** Joi et Zod, deux autres bibliothèques de validation — pour situer `class-validator` parmi ses alternatives.
+- **f. (bonus)** Point d'étape : un quiz de treize questions sur les parties 0 à 4.
+- **g. (bonus)** Projet bonus : un mini-dashboard NBA, à construire seul avec tout ce que tu as appris jusqu'ici.
