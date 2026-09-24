@@ -26,5 +26,10 @@
 	"lecon.filAriane": "Breadcrumb",
 	"lecon.partie": "Part {{n}}: {{titre}}",
 	"lecon.section": "Section {{lettre}}",
-	"lecon.contexte": "Part {{n}}, section {{lettre}}"
+	"lecon.contexte": "Part {{n}}, section {{lettre}}",
+	"entete.nav": "Main navigation",
+	"entete.parcours": "The path",
+	"entete.commentCaMarche": "How it works",
+	"langue.vers": "Change language: read in French",
+	"search.label": "Search for a guard, a pipe, an exercise…"
 }

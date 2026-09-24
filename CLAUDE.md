@@ -17,6 +17,7 @@ Cours en ligne gratuit pour apprendre NestJS en partant de zéro, sur le modèle
 
 - Français par défaut à la racine (`src/content/docs/`), anglais sous `src/content/docs/en/`. Une page absente en anglais retombe sur le français.
 - Les parties sont déclarées dans le tableau `parties` de `src/parties.mjs` (partagé par la sidebar et l'accueil, avec le regroupement en étapes).
+- URL du dépôt GitHub (lien d'en-tête, « Modifier cette page ») : `GITHUB` dans `src/site.mjs`.
 - Composant d'exercices : `src/components/Exercices.astro` + `Exercice.astro` (une case à cocher par exercice, état dans `localStorage`, clé `nestjs-open:exercice:<numéro>`) :
 
       <Exercices partie={8} de={5} a={7}>

@@ -1,0 +1,28 @@
+---
+// Pied du menu mobile (surcharge) : langue et GitHub.
+// La bascule jour/nuit est déjà dans l'en-tête, on ne la répète pas ici.
+import LangueBascule from './LangueBascule.astro';
+import { GITHUB } from '../site.mjs';
+---
+
+<div class="mobile-preferences">
+	<a class="github" href={GITHUB}>GitHub</a>
+	<LangueBascule />
+</div>
+
+<style>
+	.mobile-preferences {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 1rem;
+		padding: 0.75rem 0;
+		border-top: 1px solid var(--nj-separator);
+	}
+	.github {
+		min-height: 2.75rem;
+		display: inline-flex;
+		align-items: center;
+		color: var(--nj-text);
+	}
+</style>

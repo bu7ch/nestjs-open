@@ -2,6 +2,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import { parties } from './src/parties.mjs';
+import { GITHUB } from './src/site.mjs';
 
 export default defineConfig({
 	integrations: [
@@ -16,8 +17,8 @@ export default defineConfig({
 				root: { label: 'Français', lang: 'fr' },
 				en: { label: 'English', lang: 'en' },
 			},
-			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/TON-COMPTE/nestjs-open' }],
-			editLink: { baseUrl: 'https://github.com/TON-COMPTE/nestjs-open/edit/main/' },
+			social: [{ icon: 'github', label: 'GitHub', href: GITHUB }],
+			editLink: { baseUrl: `${GITHUB}/edit/main/` },
 			customCss: [
 				'@fontsource-variable/bricolage-grotesque',
 				'@fontsource/atkinson-hyperlegible/400.css',
@@ -41,6 +42,9 @@ export default defineConfig({
 				Pagination: './src/components/Pagination.astro',
 				// Sur mobile, « Partie 8, section c » à côté du logo.
 				SiteTitle: './src/components/SiteTitle.astro',
+				// En-tête des maquettes (liens sur l'accueil, bouton FR/EN, pas de <select>).
+				Header: './src/components/Header.astro',
+				MobileMenuFooter: './src/components/MobileMenuFooter.astro',
 			},
 			sidebar: [
 				{

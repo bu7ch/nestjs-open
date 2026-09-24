@@ -1,0 +1,121 @@
+---
+// En-tête (surcharge) selon les maquettes :
+// - accueil : logo, liens « Le parcours / Comment ça marche / GitHub », langue, thème ;
+// - leçons : logo, recherche, langue, thème.
+// Sur mobile, la bascule jour/nuit reste dans l'en-tête ; sur les leçons, la langue
+// et GitHub passent dans le menu (MobileMenuFooter).
+import Search from '@astrojs/starlight/components/Search.astro';
+import SiteTitle from './SiteTitle.astro';
+import ThemeSelect from './ThemeSelect.astro';
+import LangueBascule from './LangueBascule.astro';
+import { GITHUB } from '../site.mjs';
+
+const { entry, hasSidebar } = Astro.locals.starlightRoute;
+const accueil = Boolean(entry.data.hero);
+const prefixe = Astro.currentLocale === 'en' ? '/en' : '';
+const t = Astro.locals.t;
+---
+
+<div class:list={['header', { accueil }]}>
+	<div class="title-wrapper sl-flex">
+		<SiteTitle />
+	</div>
+	<div class="sl-flex print:hidden recherche">
+		{!accueil && <Search />}
+	</div>
+	<div class="sl-flex print:hidden right-group">
+		{
+			accueil && (
+				<nav class="liens" aria-label={t('entete.nav')}>
+					<a href={`${prefixe}/#le-parcours`}>{t('entete.parcours')}</a>
+					<a href={`${prefixe}/a-propos/`}>{t('entete.commentCaMarche')}</a>
+					<a href={GITHUB}>GitHub</a>
+				</nav>
+			)
+		}
+		<LangueBascule class:list={{ 'langue-bureau': hasSidebar }} />
+		<ThemeSelect />
+	</div>
+</div>
+
+<style>
+	@layer starlight.core {
+		.header {
+			display: flex;
+			gap: var(--sl-nav-gap);
+			justify-content: space-between;
+			align-items: center;
+			height: 100%;
+		}
+		.title-wrapper {
+			/* Évite qu'un titre long passe sous la recherche et le menu sur petit écran. */
+			overflow: clip;
+			padding: 0.25rem;
+			margin: -0.25rem;
+			min-width: 0;
+		}
+		.right-group {
+			gap: 0.75rem;
+			align-items: center;
+		}
+
+		@media (min-width: 50rem) {
+			:global(:root[data-has-sidebar]) {
+				--__sidebar-pad: calc(2 * var(--sl-nav-pad-x));
+			}
+			:global(:root:not([data-has-toc])) {
+				--__toc-width: 0rem;
+			}
+			.header {
+				--__sidebar-width: max(0rem, var(--sl-content-inline-start, 0rem) - var(--sl-nav-pad-x));
+				--__main-column-fr: calc(
+					(
+							100% + var(--__sidebar-pad, 0rem) - var(--__toc-width, var(--sl-sidebar-width)) -
+								(2 * var(--__toc-width, var(--sl-nav-pad-x))) - var(--sl-content-inline-start, 0rem) -
+								var(--sl-content-width)
+						) / 2
+				);
+				display: grid;
+				grid-template-columns:
+					minmax(
+						calc(var(--__sidebar-width) + max(0rem, var(--__main-column-fr) - var(--sl-nav-gap))),
+						auto
+					)
+					1fr
+					auto;
+				align-content: center;
+			}
+		}
+	}
+
+	.liens {
+		display: none;
+		align-items: center;
+		gap: 2rem;
+		margin-inline-end: 1.25rem;
+	}
+	.liens a {
+		color: var(--nj-text);
+		text-decoration: none;
+		font-size: 1rem;
+		white-space: nowrap;
+	}
+	.liens a:hover {
+		color: var(--sl-color-text-accent);
+		text-decoration: underline;
+	}
+	@media (min-width: 50rem) {
+		.liens {
+			display: flex;
+		}
+	}
+	/* Leçons sur mobile : la langue est dans le menu, pas dans l'en-tête. */
+	@media (max-width: 49.99rem) {
+		.right-group :global(.langue-bureau) {
+			display: none;
+		}
+		.right-group {
+			gap: 0.25rem;
+		}
+	}
+</style>

@@ -1,0 +1,41 @@
+---
+// Bouton de langue de la maquette : affiche la langue courante (« FR ») et mène à
+// la même page dans l'autre langue. Le site n'a que deux langues.
+interface Props {
+	class?: string;
+}
+const enAnglais = Astro.currentLocale === 'en';
+const chemin = Astro.url.pathname;
+const cible = enAnglais ? chemin.replace(/^\/en(\/|$)/, '/') : `/en${chemin}`;
+---
+
+<a
+	class:list={['nj-langue', Astro.props.class]}
+	href={cible}
+	hreflang={enAnglais ? 'fr' : 'en'}
+>
+	<span aria-hidden="true">{enAnglais ? 'EN' : 'FR'}</span>
+	<span class="sr-only">{Astro.locals.t('langue.vers')}</span>
+</a>
+
+<style>
+	.nj-langue {
+		height: 2.75rem;
+		min-width: 2.75rem;
+		padding: 0 0.875rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		border: 1px solid var(--nj-control-border);
+		border-radius: 8px;
+		background: var(--sl-color-bg-nav);
+		color: var(--nj-text);
+		font-size: 1rem;
+		text-decoration: none;
+	}
+	.nj-langue:hover {
+		border-color: var(--sl-color-accent);
+		color: var(--nj-text);
+	}
+</style>

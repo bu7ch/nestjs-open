@@ -26,5 +26,10 @@
 	"lecon.filAriane": "Fil d'Ariane",
 	"lecon.partie": "Partie {{n}} : {{titre}}",
 	"lecon.section": "Section {{lettre}}",
-	"lecon.contexte": "Partie {{n}}, section {{lettre}}"
+	"lecon.contexte": "Partie {{n}}, section {{lettre}}",
+	"entete.nav": "Navigation principale",
+	"entete.parcours": "Le parcours",
+	"entete.commentCaMarche": "Comment ça marche",
+	"langue.vers": "Changer de langue : lire en anglais",
+	"search.label": "Rechercher un guard, un pipe, un exercice…"
 }
