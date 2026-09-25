@@ -15,7 +15,7 @@ const situation = situer(Astro.locals.starlightRoute.entry.id, Astro.currentLoca
 {
 	situation?.lettre && (
 		<nav class="fil-ariane" aria-label={t('lecon.filAriane')}>
-			<a href={situation.hrefPartie}>{t('lecon.partie', { n: situation.partie, titre: situation.titrePartie })}</a>
+			<a href={situation.hrefPartie}>{t('lecon.partie', { n: situation.partie, titre: situation.titrePartie, interpolation: { escapeValue: false } })}</a>
 			<span aria-hidden="true">/</span>
 			<span aria-current="page">{t('lecon.section', { lettre: situation.lettre })}</span>
 		</nav>

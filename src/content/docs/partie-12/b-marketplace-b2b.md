@@ -35,7 +35,7 @@ Construire une plateforme e-commerce B2B où des vendeurs professionnels vendent
 
 ## Stack
 
-NestJS 11 en monorepo Nx, PostgreSQL 16 avec partitionnement, Elasticsearch 8, Redis 7 et Redlock, RabbitMQ, Debezium, Stripe Connect, S3 et CloudFront.
+NestJS 12 en monorepo Nx, PostgreSQL 16 avec partitionnement, Elasticsearch 8, Redis 7 et Redlock, RabbitMQ, Debezium, Stripe Connect, S3 et CloudFront.
 
 ## Planning indicatif
 

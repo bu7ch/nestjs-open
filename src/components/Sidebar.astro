@@ -2,20 +2,25 @@
 // Sidebar (surcharge) : progression en haut, puis les parties avec une pastille
 // (numéro, ou coche verte quand tous les exercices de la partie sont cochés).
 // Les totaux d'exercices par partie viennent du frontmatter `exercices` des pages
-// françaises ; le décompte des cases cochées se fait côté client (localStorage).
+// françaises, hors sections bonus (`bonus: true`) : leurs exercices ne sont pas exigés
+// pour terminer une partie. Le décompte des cases cochées se fait côté client (localStorage).
 import { getCollection } from 'astro:content';
 import MobileMenuFooter from './MobileMenuFooter.astro';
 import SidebarPersister from '@astrojs/starlight/components/SidebarPersister.astro';
 import SidebarListe from './SidebarListe.astro';
 import { parties } from '../parties.mjs';
+import { numerosDExercices } from '../verifierExercices.ts';
 
 const { sidebar } = Astro.locals.starlightRoute;
 const t = Astro.locals.t;
 
 const totaux: Record<number, number> = {};
+const numerosBonus: string[] = [];
 for (const page of await getCollection('docs')) {
 	const m = /^partie-(\d+)\//.exec(page.id);
-	if (m) totaux[Number(m[1])] = (totaux[Number(m[1])] ?? 0) + (page.data.exercices ?? 0);
+	if (!m) continue;
+	if (page.data.bonus) numerosBonus.push(...numerosDExercices(page.body ?? ''));
+	else totaux[Number(m[1])] = (totaux[Number(m[1])] ?? 0) + (page.data.exercices ?? 0);
 }
 const nbParties = parties.length;
 // Gabarits des phrases, complétés côté client (__N__ = nombre calculé).
@@ -31,6 +36,7 @@ const resumeInitial = `${gabarits.partiesOther.replace('__N__', '0')}, ${gabarit
 <nj-progression
 	class="progression"
 	data-totaux={JSON.stringify(totaux)}
+	data-bonus={JSON.stringify(numerosBonus)}
 	data-nb-parties={nbParties}
 	data-gabarits={JSON.stringify(gabarits)}
 >
@@ -59,7 +65,7 @@ const resumeInitial = `${gabarits.partiesOther.replace('__N__', '0')}, ${gabarit
 </div>
 
 <script>
-	import { faitsParPartie, EVENEMENT } from '../scripts/progression';
+	import { exercicesFaits, faitsParPartie, EVENEMENT } from '../scripts/progression';
 
 	class NjProgression extends HTMLElement {
 		connectedCallback() {
@@ -73,10 +79,12 @@ const resumeInitial = `${gabarits.partiesOther.replace('__N__', '0')}, ${gabarit
 			const totaux: Record<string, number> = JSON.parse(this.dataset.totaux ?? '{}');
 			const nbParties = Number(this.dataset.nbParties ?? 0);
 			const g = JSON.parse(this.dataset.gabarits ?? '{}');
-			const faits = faitsParPartie();
+			const bonus = new Set<string>(JSON.parse(this.dataset.bonus ?? '[]'));
+			const faits = faitsParPartie(bonus);
 
 			let terminees = 0;
-			let valides = 0;
+			// Les exercices bonus cochés comptent comme validés, sans jamais servir à terminer une partie.
+			let valides = exercicesFaits().filter((numero) => bonus.has(numero)).length;
 			document.querySelectorAll<HTMLElement>('.pastille[data-partie]').forEach((pastille) => {
 				const partie = Number(pastille.dataset.partie);
 				const total = totaux[partie] ?? 0;

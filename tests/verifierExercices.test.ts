@@ -1,7 +1,7 @@
 // Tests du garde-fou « nombre d'exercices » (lancer : npm test).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { verifierPage, verifierDoublons } from '../src/verifierExercices.ts';
+import { verifierPage, verifierDoublons, numerosDExercices } from '../src/verifierExercices.ts';
 
 const bloc = (partie: number, de: number, a: number, numeros: string[]) =>
 	`<Exercices partie={${partie}} de={${de}} a={${a}}>\n` +
@@ -65,4 +65,9 @@ test('doublons de numéro entre pages d’une même langue', () => {
 	const erreurs = verifierDoublons(pages);
 	assert.equal(erreurs.length, 1);
 	assert.match(erreurs[0]!, /0\.1.*partie-0\/a-le-web.*partie-0\/b-outils/);
+});
+
+test('numerosDExercices liste les numéros, sans ceux des exemples en blocs de code', () => {
+	const body = `${bloc(5, 19, 20, ['5.19', '5.20'])}\n\n\`\`\`mdx\n<Exercice numero="9.9" titre="Exemple">x</Exercice>\n\`\`\``;
+	assert.deepEqual(numerosDExercices(body), ['5.19', '5.20']);
 });

@@ -1,0 +1,148 @@
+---
+title: "b · Les middlewares"
+description: "Identifier et journaliser chaque requête, en dehors de toute logique métier."
+projet: loup-garou
+duree: 50
+prerequis: Section a (le cycle de vie), et la partie 2, section d (les middlewares d'Express).
+exercices: 3
+sidebar:
+  order: 2
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Le **middleware** est la première couche de la liste. Tu l'as rencontré en partie 2, avec Express : une fonction qui reçoit la requête, la réponse et `next`, et qui décide de passer la main ou de répondre elle-même. NestJS reprend exactement cette idée, avec en plus l'injection de dépendances quand on l'écrit comme une classe.
+
+Sa force est d'être **général** : il tourne avant tout le reste, pour toutes les routes qu'on lui désigne. Sa limite est symétrique : il ne sait rien de NestJS. Il ne sait pas quelle méthode de quel contrôleur va répondre, ce qu'un guard, lui, sait très bien. Un middleware convient donc aux préoccupations **HTTP générales** ; une règle qui dépend de ce que fait la route (qui a le droit, quelle phase du jeu) relève d'un guard.
+
+## Un identifiant pour chaque requête
+
+Quand un serveur reçoit des centaines de requêtes par seconde, ses journaux se mélangent : impossible de savoir quelle ligne d'erreur correspond à quel appel. La parade classique est un **identifiant de requête**, attribué à l'arrivée, ajouté à chaque ligne de journal et renvoyé au client dans l'en-tête `X-Request-Id`. Quand un joueur signale un problème, il te donne cet identifiant, et tu retrouves tout ce qui s'est passé.
+
+```ts title="src/commun/requete-id.middleware.ts" {7,15,16,17,20}
+import { randomUUID } from 'node:crypto';
+import { Injectable, Logger, NestMiddleware } from '@nestjs/common';
+import type { NextFunction, Request, Response } from 'express';
+
+export type RequeteAvecId = Request & { requeteId?: string };
+
+const FORMAT_VALIDE = /^[\w-]{1,64}$/;
+
+@Injectable()
+export class RequeteIdMiddleware implements NestMiddleware {
+	private readonly logger = new Logger('HTTP');
+
+	use(requete: RequeteAvecId, reponse: Response, next: NextFunction) {
+		const recu = requete.headers['x-request-id'];
+		const id = typeof recu === 'string' && FORMAT_VALIDE.test(recu) ? recu : randomUUID();
+		requete.requeteId = id;
+		reponse.setHeader('X-Request-Id', id);
+
+		const debut = performance.now();
+		reponse.on('finish', () => {
+			const duree = Math.round(performance.now() - debut);
+			this.logger.log(`${requete.method} ${requete.originalUrl} ${reponse.statusCode} ${duree} ms [${id}]`);
+		});
+		next();
+	}
+}
+```
+
+- Ligne 7 et ligne 15 : si le client (un front-end, un proxy) fournit déjà un identifiant, on le reprend, ce qui permet de suivre une action à travers plusieurs services. Mais **jamais sans le vérifier** : une valeur venue de l'extérieur, écrite telle quelle dans tes journaux, peut y injecter n'importe quoi (des retours à la ligne pour fabriquer de fausses lignes, par exemple). On n'accepte que des lettres, chiffres, tirets et soulignés, 64 caractères au plus ; sinon on en génère un nouveau.
+- Lignes 16 et 17 : l'identifiant est rangé sur la requête (`requete.requeteId`), pour que les couches suivantes puissent l'utiliser, comme le filtre de la section e, et renvoyé au client dans un en-tête.
+- Ligne 20 : la réponse n'existe pas encore quand le middleware s'exécute. On demande donc d'être prévenu à la fin (`'finish'`), pour journaliser le statut et la durée réels.
+
+## L'enregistrer
+
+Un middleware ne se déclare pas dans `providers` : le module qui l'utilise implémente `NestModule` et le branche dans `configure`.
+
+```ts title="src/app.module.ts"
+export class AppModule implements NestModule {
+	configure(consumer: MiddlewareConsumer) {
+		consumer.apply(RequeteIdMiddleware).exclude({ path: 'sante', method: RequestMethod.GET }).forRoutes('*');
+	}
+}
+```
+
+`forRoutes` désigne les routes concernées et `exclude` en retire. On a essayé les principales écritures avec un contrôleur `api/villages`, un contrôleur `sante` et la racine `/` :
+
+| Écriture | Racine `/` | `/api/villages` | `/api/villages/3` | `/sante` |
+|---|---|---|---|---|
+| `forRoutes('*')` | oui | oui | oui | oui |
+| `forRoutes('{*splat}')` | oui | oui | oui | oui |
+| `forRoutes(VillagesController)` | non | oui | oui | non |
+| `forRoutes('api/villages')` | non | oui | oui | non |
+| `forRoutes({ path: 'api/villages', method: RequestMethod.POST })` | non | non (`GET`) | non (`GET`) | non |
+| `forRoutes('*')` + `exclude('sante')` | oui | oui | oui | non |
+
+On en retient trois choses. `'*'` fonctionne avec l'Express 5 de NestJS 12, sans avertissement, même si sa syntaxe de chemin a changé (l'écriture `'{*splat}'`, plus récente, donne le même résultat). Un chemin ou un contrôleur couvre aussi tout ce qui commence par lui, sous-routes comprises. Et on peut restreindre à une méthode HTTP.
+
+Un middleware peut aussi s'écrire comme une simple fonction `(requete, reponse, suivant) => { … }`, qu'on passe à `apply` : c'est utile pour un traitement de quelques lignes, sans besoin d'injection.
+
+## Tester
+
+Un middleware se teste avec de vraies requêtes : c'est son effet HTTP qu'on vérifie (l'en-tête, le journal). Pour capter ce qu'il journalise, on branche un faux logger sur l'application, avec `app.useLogger`.
+
+```ts title="test/requete-id.e2e-spec.ts"
+beforeAll(async () => {
+	const module = await Test.createTestingModule({ imports: [AppModule] }).compile();
+	app = module.createNestApplication();
+	app.useLogger({ log: journal, warn: vi.fn(), error: vi.fn() });
+	configurerApp(app);
+	await app.init();
+});
+
+it('génère un identifiant quand le client n\'en fournit pas', async () => {
+	const reponse = await http().get('/inconnue');
+	expect(reponse.headers['x-request-id']).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+});
+
+it('reprend l\'identifiant fourni par le client s\'il est valide', async () => {
+	const reponse = await http().get('/inconnue').set('X-Request-Id', 'front-42');
+	expect(reponse.headers['x-request-id']).toBe('front-42');
+});
+
+it('remplace un identifiant douteux par un nouveau', async () => {
+	const reponse = await http().get('/inconnue').set('X-Request-Id', '../../etc/passwd');
+	expect(reponse.headers['x-request-id']).not.toBe('../../etc/passwd');
+	expect(reponse.headers['x-request-id']).toHaveLength(36);
+});
+
+it('journalise méthode, URL, statut, durée et identifiant', async () => {
+	await http().get('/inconnue').set('X-Request-Id', 'abc-123');
+	await vi.waitFor(() => {
+		expect(journal).toHaveBeenCalledWith(expect.stringMatching(/^GET \/inconnue 404 \d+ ms \[abc-123\]$/), 'HTTP');
+	});
+});
+
+it('ne s\'applique pas à la route exclue /sante', async () => {
+	const reponse = await http().get('/sante').expect(200);
+	expect(reponse.headers['x-request-id']).toBeUndefined();
+	expect(journal).not.toHaveBeenCalledWith(expect.stringContaining('/sante'), 'HTTP');
+});
+```
+
+Ces tests utilisent une route qui n'existe pas (`/inconnue`) : le middleware s'exécute avant que NestJS ne cherche la route, donc même une `404` a son identifiant. Trois pièges attendent celui qui les écrit :
+
+**Espionner le `Logger` directement.** `vi.spyOn(Logger.prototype, 'log')` semble naturel, mais il casse NestJS lui-même, qui utilise le `Logger` en interne dès le démarrage : tous les tests échouent avec `TypeError: Cannot read properties of undefined (reading 'context')`. `app.useLogger(...)` est la méthode prévue pour ça.
+
+**Le second argument du journal.** Le logger de NestJS reçoit le message **et** le contexte (`'HTTP'`, le nom donné à `new Logger('HTTP')`), en deux arguments : d'où le `'HTTP'` dans `toHaveBeenCalledWith`.
+
+**Le journal arrive après la réponse.** L'événement `'finish'` peut se produire un instant **après** que le client a reçu la réponse. Un test qui vérifie le journal tout de suite peut donc échouer une fois sur dix, ou, pire, recevoir la ligne d'une requête précédente. Dans nos essais, un test « aucun appel du journal » a échoué 1 fois sur 10 pour cette raison. Deux remèdes : attendre la ligne attendue avec `vi.waitFor` (elle est réessayée jusqu'à ce qu'elle passe), et chercher l'absence d'une ligne **précise** plutôt que l'absence de tout appel. Avec ces deux corrections, 25 lancements sur 25 ont réussi.
+
+<Exercices partie={8} de={4} a={6}>
+
+<Exercice numero="8.4" titre="Un identifiant de requête">
+Écris `RequeteIdMiddleware` dans ta marketplace : il génère un identifiant, accepte celui du client s'il est valide, l'ajoute à `X-Request-Id`, et le range sur la requête. Branche-le sur toutes les routes. Écris les trois premiers tests de la section (généré, repris, douteux remplacé).
+</Exercice>
+
+<Exercice numero="8.5" titre="Journaliser, sans polluer les tests">
+Journalise dans le middleware `GET /api/produits 200 12 ms [identifiant]` (méthode, URL, statut, durée, identifiant) avec `Logger`. Teste-le avec `app.useLogger`, sans espionner le `Logger`. Écris d'abord l'assertion **sans** `vi.waitFor` et relance le fichier une vingtaine de fois : que se passe-t-il ? Ajoute `vi.waitFor` et recommence.
+</Exercice>
+
+<Exercice numero="8.6" titre="Exclure, et écrire une fonction">
+Ajoute une route publique `GET /sante` qui répond `{ "statut": "ok" }`, et exclus-la du middleware avec `exclude`. Vérifie qu'elle n'a pas d'en-tête `X-Request-Id` alors que les autres en ont un. Ajoute enfin un second middleware, **fonctionnel** cette fois, qui pose l'en-tête `X-Serveur: marketplace` sur toutes les réponses, et vérifie-le par un test.
+</Exercice>
+
+</Exercices>

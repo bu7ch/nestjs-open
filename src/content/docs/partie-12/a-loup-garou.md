@@ -47,7 +47,7 @@ Le jeu repose sur l'information cachée : le serveur est le seul à connaître t
 
 ## Stack
 
-NestJS 11, PostgreSQL 16, Redis 7 en cluster, Kafka, gRPC, Socket.io, Passport + JWT, Docker et Kubernetes.
+NestJS 12, PostgreSQL 16, Redis 7 en cluster, Kafka, gRPC, Socket.io, Passport + JWT, Docker et Kubernetes.
 
 ## Planning indicatif
 

@@ -20,6 +20,12 @@ Les deux projets utilisent les mêmes notions, mais sur des domaines différents
 
 Les parties 0 à 2 posent les bases avec de petits exercices indépendants.
 
+## Les sections bonus
+
+Certaines sections sont marquées « bonus » dans l'introduction de leur partie. Elles présentent une alternative à ce que tu viens d'apprendre (Joi et Zod, Prisma, GraphQL, Passport, Clerk) ou un projet supplémentaire : le mini-dashboard NBA de la partie 4, sur un troisième thème, à construire seul pour vérifier que tu as tout retenu.
+
+Tu peux les sauter sans rien perdre pour la suite. Leurs exercices sont numérotés comme les autres et comptent dans ton nombre d'exercices validés, mais ils ne sont **pas** exigés pour terminer une partie.
+
 ## Les projets de fin de parcours
 
 La partie 12 reprend ces deux projets dans leur version complète, avec des cahiers des charges professionnels : microservices, files de messages, temps réel à grande échelle, paiements. Tu y arrives en connaissant déjà le domaine, puisque tu l'as construit en version simple.

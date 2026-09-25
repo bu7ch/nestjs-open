@@ -1,0 +1,215 @@
+---
+title: "e · Les filtres d'exceptions"
+description: "Un format d'erreur unique pour toute l'API, et des erreurs de base de données traduites une fois pour toutes."
+projet: loup-garou
+duree: 55
+prerequis: Sections a et b (le cycle de vie, les middlewares).
+exercices: 3
+sidebar:
+  order: 5
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Depuis la partie 3, tu lèves des exceptions (`NotFoundException`, `BadRequestException`…) et NestJS en fait des réponses JSON. Cette transformation est le travail d'un **filtre d'exceptions**, que tu utilises sans le savoir : celui, intégré, de NestJS. Il donne :
+
+```json
+{ "message": "Village 9 introuvable", "error": "Not Found", "statusCode": 404 }
+```
+
+et pour une erreur qu'il ne reconnaît pas (une panne de base, un bug), un message générique :
+
+```json
+{ "statusCode": 500, "message": "Internal server error" }
+```
+
+Deux limites apparaissent avec un vrai projet. D'abord, ce format n'a pas tout ce qu'un client, ou toi en production, voudrait : pas d'identifiant de requête pour retrouver l'erreur dans les journaux, pas de chemin ni d'heure. Ensuite, tu as écrit à plusieurs endroits le même genre de code : en partie 5 (exercice 5.13) et en partie 7 (l'inscription), un `try/catch` autour d'une violation de contrainte SQL pour la transformer en `409`. Un filtre permet de faire les deux **une seule fois**.
+
+## Un filtre pour tout attraper
+
+Un filtre est une classe qui implémente `ExceptionFilter`, avec une méthode `catch`. Le décorateur `@Catch()` dit **quelles** exceptions elle traite : sans argument, toutes.
+
+```ts title="src/commun/toutes-exceptions.filter.ts" {6,16,17,30,35,40}
+import { ArgumentsHost, Catch, ExceptionFilter, HttpException, Logger } from '@nestjs/common';
+import type { Response } from 'express';
+import { QueryFailedError } from 'typeorm';
+import type { RequeteAvecId } from './requete-id.middleware.js';
+
+@Catch()
+export class ToutesExceptionsFilter implements ExceptionFilter {
+	private readonly logger = new Logger('Erreurs');
+
+	catch(exception: unknown, hote: ArgumentsHost) {
+		const contexte = hote.switchToHttp();
+		const requete = contexte.getRequest<RequeteAvecId>();
+		const reponse = contexte.getResponse<Response>();
+		const { statut, message } = this.decrire(exception);
+
+		if (statut >= 500) {
+			this.logger.error(`${requete.method} ${requete.originalUrl} [${requete.requeteId}]`, exception instanceof Error ? exception.stack : String(exception));
+		}
+
+		reponse.status(statut).json({
+			statusCode: statut,
+			message,
+			chemin: requete.originalUrl,
+			horodatage: new Date().toISOString(),
+			requeteId: requete.requeteId,
+		});
+	}
+
+	private decrire(exception: unknown): { statut: number; message: string | string[] } {
+		if (exception instanceof HttpException) {
+			const corps = exception.getResponse();
+			const message = typeof corps === 'string' ? corps : ((corps as { message?: string | string[] }).message ?? exception.message);
+			return { statut: exception.getStatus(), message };
+		}
+		if (exception instanceof QueryFailedError) {
+			const code = (exception.driverError as { code?: string }).code;
+			if (code === '23505') return { statut: 409, message: 'Cette ressource existe déjà' };
+			if (code === '23503') return { statut: 409, message: 'Cette ressource est liée à d\'autres données' };
+		}
+		return { statut: 500, message: 'Erreur interne du serveur' };
+	}
+}
+```
+
+- Ligne 6 : `@Catch()` sans argument : ce filtre reçoit **toutes** les exceptions, y compris celles qui ne sont pas des `HttpException`.
+- Lignes 16 et 17 : les erreurs du **serveur** (`500` et plus) sont journalisées avec leur pile d'appels et l'identifiant de la requête, celui que le middleware de la section b a rangé sur la requête. Les erreurs du client (`404`, `400`…) ne le sont pas : ce sont des cas normaux, pas des incidents.
+- Ligne 30 : une `HttpException` garde son statut et son message. Pour une validation (`BadRequestException` du `ValidationPipe`), le message est un **tableau** de règles violées, que le filtre conserve tel quel.
+- Ligne 35 : une erreur de base de données. Le code SQL `23505` (unicité) et `23503` (clé étrangère) sont ceux des parties 5 et 7 ; ils deviennent un `409` **partout**, sans que chaque service ait à s'en occuper.
+- Ligne 40 : tout le reste est un `500` au message **volontairement pauvre**. Le vrai message (un nom de table, une requête, un mot de passe dans une chaîne de connexion) reste dans le journal, jamais dans la réponse.
+
+Comme les briques globales de la section a, il se déclare dans un module, avec un jeton spécial, pour exister aussi dans les tests :
+
+```ts title="src/app.module.ts"
+providers: [{ provide: APP_FILTER, useClass: ToutesExceptionsFilter }],
+```
+
+## Qui attrape quoi
+
+On peut aussi appliquer un filtre à une route ou un contrôleur, avec `@UseFilters(...)`, et restreindre ce qu'il attrape en donnant des classes à `@Catch`. Quand plusieurs filtres sont possibles, **le plus précis gagne**, et un seul répond. On l'a vérifié avec un filtre global et un filtre de route `@Catch(NotFoundException)` :
+
+| Route | Exception levée | Qui répond |
+|---|---|---|
+| `/t/a` (filtre de route) | `NotFoundException` | le filtre de la route, le global n'est pas appelé |
+| `/t/b` (filtre de route) | une autre `HttpException` (418) | le filtre global, car celui de la route ne la reconnaît pas |
+
+La section a a montré que même les erreurs levées dans un guard, un pipe ou un middleware, et les routes inconnues (`NotFoundException`), passent par les filtres : c'est ce qui fait qu'**un seul** filtre global donne un format uniforme à toute l'API.
+
+## Tester
+
+Le filtre est une classe avec une méthode : on l'appelle avec un faux `ArgumentsHost`, qui fournit une fausse requête et une fausse réponse.
+
+```ts title="src/commun/toutes-exceptions.filter.spec.ts"
+const hoteDe = () => {
+	const json = vi.fn();
+	const status = vi.fn(() => ({ json }));
+	const requete = { method: 'POST', originalUrl: '/api/villages', requeteId: 'abc-123' };
+	const hote = { switchToHttp: () => ({ getRequest: () => requete, getResponse: () => ({ status }) }) } as unknown as ArgumentsHost;
+	return { hote, status, json };
+};
+
+const erreurSql = (code: string) => new QueryFailedError('INSERT …', [], Object.assign(new Error('détail SQL'), { code }));
+
+describe('ToutesExceptionsFilter', () => {
+	const filtre = new ToutesExceptionsFilter();
+
+	beforeEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('reprend le statut et le message d\'une HttpException', () => {
+		const { hote, status, json } = hoteDe();
+		filtre.catch(new NotFoundException('Village 9 introuvable'), hote);
+		expect(status).toHaveBeenCalledWith(404);
+		expect(json).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 404, message: 'Village 9 introuvable', chemin: '/api/villages', requeteId: 'abc-123' }));
+	});
+
+	it('garde la liste des règles violées par une validation', () => {
+		const { hote, json } = hoteDe();
+		filtre.catch(new BadRequestException(['nom should not be empty', 'phase must be a string']), hote);
+		expect(json).toHaveBeenCalledWith(expect.objectContaining({ message: ['nom should not be empty', 'phase must be a string'] }));
+	});
+
+	it.each([
+		['23505', 'Cette ressource existe déjà'],
+		['23503', 'Cette ressource est liée à d\'autres données'],
+	])('traduit le code SQL %s en 409', (code, message) => {
+		const { hote, status, json } = hoteDe();
+		filtre.catch(erreurSql(code), hote);
+		expect(status).toHaveBeenCalledWith(409);
+		expect(json).toHaveBeenCalledWith(expect.objectContaining({ message }));
+	});
+
+	it('répond 500 sans rien révéler d\'une erreur inattendue, et la journalise', () => {
+		const { hote, status, json } = hoteDe();
+		const journaliser = vi.spyOn(filtre['logger'], 'error').mockImplementation(() => {});
+
+		filtre.catch(new Error('mot de passe de la base : hunter2'), hote);
+
+		expect(status).toHaveBeenCalledWith(500);
+		const corps = json.mock.calls[0]?.[0];
+		expect(corps.message).toBe('Erreur interne du serveur');
+		expect(JSON.stringify(corps)).not.toContain('hunter2');
+		expect(journaliser).toHaveBeenCalledWith('POST /api/villages [abc-123]', expect.stringContaining('hunter2'));
+	});
+
+	it('ne journalise pas les erreurs du client (4xx)', () => {
+		const { hote } = hoteDe();
+		const journaliser = vi.spyOn(filtre['logger'], 'error').mockImplementation(() => {});
+		filtre.catch(new NotFoundException(), hote);
+		expect(journaliser).not.toHaveBeenCalled();
+	});
+});
+```
+
+Le test « 500 » vérifie les deux faces de la règle : le secret (`hunter2`) n'apparaît **pas** dans la réponse, mais apparaît dans le journal, où il a sa place. Le `beforeEach` avec `vi.restoreAllMocks()` n'est pas un détail : sans lui, l'espion du test précédent conserve son historique, et le dernier test (« pas de journal pour un 4xx ») échoue avec `expected "Mock" to not be called at all, but actually been called 1 times`, le défaut de la partie 6, section b.
+
+Les tests de bout en bout vérifient le tout avec la vraie base :
+
+```ts title="test/erreurs.e2e-spec.ts"
+it('met toutes les erreurs au même format, avec l\'identifiant de la requête', async () => {
+	const reponse = await http().get('/api/introuvable').set('Authorization', entete).set('X-Request-Id', 'abc-123').expect(404);
+	expect(reponse.body).toEqual({
+		statusCode: 404,
+		message: 'Cannot GET /api/introuvable',
+		chemin: '/api/introuvable',
+		horodatage: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+		requeteId: 'abc-123',
+	});
+	expect(reponse.headers['x-request-id']).toBe('abc-123');
+});
+
+it('garde le détail de chaque règle violée pour une validation (400)', async () => {
+	const reponse = await http().post('/api/villages').set('Authorization', entete).send({ nom: '' }).expect(400);
+	expect(reponse.body.message).toEqual(['nom should not be empty']);
+});
+
+it('transforme une violation d\'unicité de la base en 409, sans try/catch dans le service', async () => {
+	await http().post('/api/villages').set('Authorization', entete).send({ nom: 'Lune Rousse' }).expect(201);
+	const reponse = await http().post('/api/villages').set('Authorization', entete).send({ nom: 'Lune Rousse' }).expect(409);
+	expect(reponse.body.message).toBe('Cette ressource existe déjà');
+});
+```
+
+Pour que le dernier test ait un sens, le nom d'un village est devenu unique (`@Column({ unique: true })`, avec sa migration, partie 5, section d) : deux villages ne portent pas le même nom. Le service `creer` n'a **aucun** `try/catch`, et pourtant la réponse est un `409` propre.
+
+Un compromis à connaître : le filtre donne un message générique (`Cette ressource existe déjà`), là où l'inscription de la partie 7 disait `Ce pseudo est déjà pris`. Si un message précis compte pour l'utilisateur, on peut garder le `try/catch` dans ce service précis, ou faire lever une `ConflictException` plus explicite : le filtre reste le filet de sécurité pour tous les cas qu'on n'a pas traités à la main.
+
+<Exercices partie={8} de={14} a={16}>
+
+<Exercice numero="8.14" titre="Un format d'erreur unique">
+Écris `ToutesExceptionsFilter` pour ta marketplace, avec `statusCode`, `message`, `chemin`, `horodatage` et `requeteId`, et déclare-le avec `APP_FILTER`. Écris les tests de bout en bout : une route inconnue (format complet, avec l'identifiant fourni dans `X-Request-Id`), et une validation ratée dont le tableau de messages est conservé.
+</Exercice>
+
+<Exercice numero="8.15" titre="Traduire les erreurs de la base">
+Fais traduire par le filtre les codes SQL `23505` et `23503` en `409`. Retire le `try/catch` de suppression d'un vendeur commandé (exercice 5.13) et celui de l'inscription d'un email déjà pris (exercice 7.4), et vérifie que les tests **de bout en bout** de ces routes passent toujours (les tests unitaires des services qui vérifiaient la conversion en `409` n'ont plus d'objet : la conversion est désormais testée dans le filtre). Qu'est-ce qui a changé dans le message reçu par le client, et est-ce acceptable ?
+</Exercice>
+
+<Exercice numero="8.16" titre="Ne rien révéler">
+Écris le test unitaire du filtre avec un faux `ArgumentsHost` : une erreur inattendue contenant un faux secret renvoie un `500` au message générique, sans le secret, et le secret apparaît dans l'appel à `logger.error`. Ajoute le cas d'une erreur `4xx`, qui ne doit pas être journalisée. Oublie volontairement `vi.restoreAllMocks()` et note le test qui échoue.
+</Exercice>
+
+</Exercices>

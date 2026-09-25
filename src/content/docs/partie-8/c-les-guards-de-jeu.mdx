@@ -1,0 +1,274 @@
+---
+title: "c · Les guards de jeu"
+description: "Autoriser une action selon la phase du jeu, l'état du joueur et son rôle, avec des guards qui lisent la base."
+projet: loup-garou
+duree: 65
+prerequis: Section b (les middlewares), partie 7 (les guards et les rôles).
+exercices: 4
+sidebar:
+  order: 3
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+En partie 7, les guards répondaient à « qui es-tu ? » (`AuthGuard`) et « quel type de compte as-tu ? » (`RolesGuard`). Les règles d'un Loup-Garou sont plus fines, et elles dépendent de l'**état de la partie** :
+
+- on ne vote que **le jour** ;
+- les loups n'attaquent que **la nuit** ;
+- un joueur **mort** ne joue plus ;
+- et surtout, il faut **participer** au village dont on parle.
+
+Aucune de ces règles ne se décide avec le seul jeton : il faut regarder la base. Un guard peut le faire, puisqu'il reçoit ses dépendances par le constructeur comme n'importe quel service.
+
+## Deux décorateurs pour dire ce que la route exige
+
+Comme `@Public()` et `@Roles()`, ils accrochent une information à la route, et un guard la lit :
+
+```ts title="src/villages/guards/phase.decorator.ts"
+import { SetMetadata } from '@nestjs/common';
+import type { Phase } from '../village.entity.js';
+
+export const PHASE_CLE = 'phaseRequise';
+export const PhaseRequise = (phase: Phase) => SetMetadata(PHASE_CLE, phase);
+```
+
+```ts title="src/villages/guards/role-de-jeu.decorator.ts"
+import { SetMetadata } from '@nestjs/common';
+import type { RoleDeJeu as RoleDeJeuType } from '../participation.entity.js';
+
+export const ROLE_DE_JEU_CLE = 'roleDeJeu';
+export const RoleDeJeu = (role: RoleDeJeuType) => SetMetadata(ROLE_DE_JEU_CLE, role);
+```
+
+`Phase` est le type `'jour' | 'nuit'` du champ `phase` de `Village`, ajouté en partie 5 (section d) ; `RoleDeJeu` est `'loup-garou' | 'villageois' | 'voyante'`. Attention à ne pas confondre `RoleDeJeu` avec le `Role` de la partie 7 (`joueur` ou `admin`) : le premier est un rôle **dans une partie**, le second est un type de **compte**.
+
+## Le guard de phase
+
+```ts title="src/villages/guards/phase.guard.ts" {12,20,21,23,25}
+import { BadRequestException, CanActivate, ExecutionContext, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import type { RequeteAuthentifiee } from '../../auth/types.js';
+import type { Phase } from '../village.entity.js';
+import { VillagesService } from '../villages.service.js';
+import { PHASE_CLE } from './phase.decorator.js';
+
+@Injectable()
+export class PhaseGuard implements CanActivate {
+	constructor(
+		private readonly reflector: Reflector,
+		private readonly villages: VillagesService,
+	) {}
+
+	async canActivate(contexte: ExecutionContext): Promise<boolean> {
+		const requise = this.reflector.getAllAndOverride<Phase | undefined>(PHASE_CLE, [contexte.getHandler(), contexte.getClass()]);
+		if (!requise) return true;
+
+		const requete = contexte.switchToHttp().getRequest<RequeteAuthentifiee>();
+		const id = Number(requete.params.id);
+		if (!Number.isInteger(id)) throw new BadRequestException('Identifiant de village invalide');
+
+		const village = await this.villages.trouverSansParticipants(id);
+		if (!village) throw new NotFoundException(`Village ${id} introuvable`);
+		if (village.phase !== requise) {
+			throw new ForbiddenException(`Ce n'est pas le moment : c'est ${village.phase === 'nuit' ? 'la nuit' : 'le jour'}`);
+		}
+		return true;
+	}
+}
+```
+
+- Ligne 12 : le guard reçoit `VillagesService` par son constructeur, comme un contrôleur. Le module qui utilise le guard doit simplement pouvoir fournir ce dont il dépend.
+- Lignes 20 et 21 : le piège de la section a. Le guard s'exécute **avant** le `ParseIntPipe` de la méthode, donc `requete.params.id` est une chaîne non validée. On la convertit et on la vérifie soi-même. Sans cette vérification, `/api/villages/abc/votes` fait exécuter `Number('abc')`, c'est-à-dire `NaN`, que le guard passe à la base, et PostgreSQL répond `invalid input syntax for type integer: "NaN"` : le client reçoit une `500` au lieu d'une `400`.
+- Ligne 23 : le village est lu **sans ses participants** (`trouverSansParticipants`), car ce guard n'a besoin que de la phase : inutile de charger toute la partie pour ça.
+- Ligne 25 : le refus dit pourquoi (`Ce n'est pas le moment : c'est la nuit`). Pour l'authentification, on restait vague pour ne rien apprendre à un attaquant ; ici, la règle du jeu est publique, et un joueur qui tente un vote au mauvais moment gagne à comprendre.
+
+## Le guard du joueur
+
+```ts title="src/villages/guards/joueur-vivant.guard.ts" {22,23,24,27,29}
+import { BadRequestException, CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import type { RequeteAuthentifiee } from '../../auth/types.js';
+import type { Participation, RoleDeJeu } from '../participation.entity.js';
+import { VillagesService } from '../villages.service.js';
+import { ROLE_DE_JEU_CLE } from './role-de-jeu.decorator.js';
+
+export type RequeteDeJeu = RequeteAuthentifiee & { participation?: Participation };
+
+@Injectable()
+export class JoueurVivantGuard implements CanActivate {
+	constructor(
+		private readonly reflector: Reflector,
+		private readonly villages: VillagesService,
+	) {}
+
+	async canActivate(contexte: ExecutionContext): Promise<boolean> {
+		const requete = contexte.switchToHttp().getRequest<RequeteDeJeu>();
+		const id = Number(requete.params.id);
+		if (!Number.isInteger(id) || !requete.utilisateur) throw new BadRequestException('Requête invalide');
+
+		const participation = await this.villages.participationDe(id, requete.utilisateur.id);
+		if (!participation) throw new ForbiddenException('Tu ne participes pas à ce village');
+		if (!participation.vivant) throw new ForbiddenException('Les morts ne jouent plus');
+
+		const roleRequis = this.reflector.getAllAndOverride<RoleDeJeu | undefined>(ROLE_DE_JEU_CLE, [contexte.getHandler(), contexte.getClass()]);
+		if (roleRequis && participation.role !== roleRequis) throw new ForbiddenException(`Action réservée au rôle : ${roleRequis}`);
+
+		requete.participation = participation;
+		return true;
+	}
+}
+```
+
+Il cherche la participation de l'utilisateur **du jeton** dans le village de la route (ligne 22). Trois refus possibles : il ne participe pas (23), il est mort (24), ou il n'a pas le rôle que la route exige (27, uniquement si elle a un `@RoleDeJeu`). Et s'il passe, le guard range sa participation sur la requête (29), pour que la suite n'ait pas à la relire.
+
+## Les assembler sur les routes
+
+```ts title="src/villages/villages.controller.ts" {2,3,9,10,11}
+@Post(':id/votes')
+@PhaseRequise('jour')
+@UseGuards(PhaseGuard, JoueurVivantGuard)
+voter(@Param('id', ParseIntPipe) _id: number, @Body() dto: CibleDto, @UtilisateurCourant() utilisateur: UtilisateurCourantDonnees) {
+	return { votant: utilisateur.pseudo, cible: dto.cible };
+}
+
+@Post(':id/attaques')
+@PhaseRequise('nuit')
+@RoleDeJeu('loup-garou')
+@UseGuards(PhaseGuard, JoueurVivantGuard)
+attaquer(@Param('id', ParseIntPipe) _id: number, @Body() dto: CibleDto, @UtilisateurCourant() utilisateur: UtilisateurCourantDonnees) {
+	return { attaquant: utilisateur.pseudo, cible: dto.cible };
+}
+```
+
+Voter, c'est la phase de jour et un joueur vivant. Attaquer, c'est la phase de nuit, un joueur vivant, **et** le rôle de loup-garou : « c'est la nuit et tu es loup », deux guards et deux décorateurs qui se composent. Le `UseGuards(PhaseGuard, JoueurVivantGuard)` les exécute **de gauche à droite**, après les guards globaux comme `AuthGuard` : un visiteur sans jeton reçoit `401` avant même qu'on regarde la phase.
+
+L'ordre entre les deux guards de la route a une conséquence visible. Un joueur mort qui tente de voter **la nuit** reçoit `Ce n'est pas le moment : c'est la nuit`, pas `Les morts ne jouent plus` : la phase est vérifiée en premier.
+
+## Tester un guard sans serveur
+
+Un guard est une classe avec une méthode : on peut l'appeler directement, avec un faux `ExecutionContext` qui ne fournit que ce que le guard lit.
+
+```ts title="src/villages/guards/phase.guard.spec.ts"
+class RouteDeNuit {
+	@PhaseRequise('nuit')
+	action() {}
+
+	libre() {}
+}
+
+const contexteDe = (params: Record<string, string>, methode: () => void): ExecutionContext =>
+	({
+		switchToHttp: () => ({ getRequest: () => ({ params }) }),
+		getHandler: () => methode,
+		getClass: () => RouteDeNuit,
+	}) as unknown as ExecutionContext;
+
+describe('PhaseGuard', () => {
+	let guard: PhaseGuard;
+	const villages = { trouverSansParticipants: vi.fn() };
+
+	beforeEach(async () => {
+		vi.resetAllMocks();
+		const module = await Test.createTestingModule({
+			providers: [PhaseGuard, { provide: VillagesService, useValue: villages }],
+		}).compile();
+		guard = module.get(PhaseGuard);
+	});
+
+	it('laisse passer quand la phase du village est celle que la route exige', async () => {
+		villages.trouverSansParticipants.mockResolvedValue({ id: 1, phase: 'nuit' });
+		await expect(guard.canActivate(contexteDe({ id: '1' }, RouteDeNuit.prototype.action))).resolves.toBe(true);
+	});
+
+	it('refuse avec la phase en cours dans le message', async () => {
+		villages.trouverSansParticipants.mockResolvedValue({ id: 1, phase: 'jour' });
+		await expect(guard.canActivate(contexteDe({ id: '1' }, RouteDeNuit.prototype.action))).rejects.toThrow(
+			new ForbiddenException('Ce n\'est pas le moment : c\'est le jour'),
+		);
+	});
+
+	it('ne fait rien sur une route sans @PhaseRequise', async () => {
+		await expect(guard.canActivate(contexteDe({ id: '1' }, RouteDeNuit.prototype.libre))).resolves.toBe(true);
+		expect(villages.trouverSansParticipants).not.toHaveBeenCalled();
+	});
+
+	it('refuse un identifiant qui n\'est pas un entier, avant toute requête en base', async () => {
+		await expect(guard.canActivate(contexteDe({ id: 'abc' }, RouteDeNuit.prototype.action))).rejects.toThrow(BadRequestException);
+		expect(villages.trouverSansParticipants).not.toHaveBeenCalled();
+	});
+
+	it('répond 404 quand le village n\'existe pas', async () => {
+		villages.trouverSansParticipants.mockResolvedValue(null);
+		await expect(guard.canActivate(contexteDe({ id: '9' }, RouteDeNuit.prototype.action))).rejects.toThrow(NotFoundException);
+	});
+});
+```
+
+La classe `RouteDeNuit` sert à fabriquer une vraie méthode décorée, dont le vrai `Reflector` (fourni par le module de test) lit la métadonnée : on teste ainsi la lecture de `@PhaseRequise` elle-même, pas une imitation. Le test « identifiant absurde » vérifie aussi que la base n'est **pas** interrogée.
+
+Et les tests de bout en bout couvrent l'ensemble, avec les vrais guards, la vraie base et de vrais jetons signés directement avec `JwtService` (plus rapide que de passer par la connexion) :
+
+```ts title="test/jeu.e2e-spec.ts"
+const creerJoueur = async (pseudo: string) => {
+	const [{ id }] = await dataSource.query('INSERT INTO utilisateurs (pseudo) VALUES ($1) RETURNING id', [pseudo]);
+	const jeton = await app.get(JwtService).signAsync({ sub: id, pseudo, role: 'joueur' });
+	return { id: id as number, entete: `Bearer ${jeton}` };
+};
+const creerVillage = async (phase: 'jour' | 'nuit') => {
+	const [{ id }] = await dataSource.query('INSERT INTO villages (nom, phase) VALUES ($1, $2) RETURNING id', ['Lune Rousse', phase]);
+	return id as number;
+};
+const faireParticiper = (villageId: number, utilisateurId: number, role: string, vivant = true) =>
+	dataSource.query('INSERT INTO participations (role, vivant, "villageId", "utilisateurId") VALUES ($1, $2, $3, $4)', [role, vivant, villageId, utilisateurId]);
+
+it('refuse un vote de nuit, avec la raison', async () => {
+	const alice = await creerJoueur('Alice');
+	const village = await creerVillage('nuit');
+	await faireParticiper(village, alice.id, 'villageois');
+	const reponse = await http().post(`/api/villages/${village}/votes`).set('Authorization', alice.entete).send({ cible: 'Bob' }).expect(403);
+	expect(reponse.body.message).toBe('Ce n\'est pas le moment : c\'est la nuit');
+});
+
+it('refuse un villageois, et un loup de jour', async () => {
+	const alice = await creerJoueur('Alice');
+	const loup = await creerJoueur('Loup');
+	const nuit = await creerVillage('nuit');
+	await faireParticiper(nuit, alice.id, 'villageois');
+	const villageois = await http().post(`/api/villages/${nuit}/attaques`).set('Authorization', alice.entete).send({ cible: 'Loup' }).expect(403);
+	expect(villageois.body.message).toBe('Action réservée au rôle : loup-garou');
+
+	await dataSource.query("UPDATE villages SET phase = 'jour'");
+	await faireParticiper(nuit, loup.id, 'loup-garou');
+	const jour = await http().post(`/api/villages/${nuit}/attaques`).set('Authorization', loup.entete).send({ cible: 'Alice' }).expect(403);
+	expect(jour.body.message).toBe('Ce n\'est pas le moment : c\'est le jour');
+});
+
+it('répond 404 pour un village inconnu, et 400 pour un identifiant absurde', async () => {
+	const alice = await creerJoueur('Alice');
+	await http().post('/api/villages/99/votes').set('Authorization', alice.entete).send({ cible: 'Bob' }).expect(404);
+	await http().post('/api/villages/abc/votes').set('Authorization', alice.entete).send({ cible: 'Bob' }).expect(400);
+});
+```
+
+Les états de jeu (village, participations) sont posés directement par SQL : c'est plus court que de rejouer une partie, et le test reste lisible. Si tu retires la vérification de l'entier dans `PhaseGuard`, le dernier test échoue avec `expected 400 "Bad Request", got 500 "Internal Server Error"` : le piège de la section a, pris sur le fait.
+
+<Exercices partie={8} de={7} a={10}>
+
+<Exercice numero="8.7" titre="Un guard de statut">
+Ajoute à `Commande` une colonne `statut` (`en_attente` par défaut, avec la migration de la partie 5). Écris `@StatutRequis('payee')` et un guard qui charge la commande de la route, et refuse (`403`, avec le statut actuel dans le message) si son statut ne correspond pas. Protège `POST /api/commandes/:id/expedier` avec, et vérifie qu'une commande `en_attente` reçoit `403`, alors qu'une commande `payee` passe.
+</Exercice>
+
+<Exercice numero="8.8" titre="Isoler les vendeurs">
+Écris un guard qui protège `GET /api/vendeurs/:vendeurId/commandes` : le compte connecté doit être le propriétaire de ce vendeur (relation `Vendeur` vers `Compte`, exercice 7.14), ou un `admin`. Un vendeur qui demande les commandes d'un autre reçoit `403`, un vendeur inconnu `404`. Teste avec deux comptes vendeurs et un admin.
+</Exercice>
+
+<Exercice numero="8.9" titre="Faire confiance à :id, exprès">
+Retire de tes guards la vérification que `:vendeurId` est un entier. Appelle la route avec un identifiant absurde (`abc`) et note le statut obtenu et le message que le serveur affiche. Explique en une phrase pourquoi `ParseIntPipe` n'a pas pu t'en protéger. Remets la vérification.
+</Exercice>
+
+<Exercice numero="8.10" titre="Tester un guard sans serveur">
+Écris le test unitaire de ton guard de statut sur le modèle de `PhaseGuard` : un faux `ExecutionContext`, une vraie méthode décorée, une fausse base. Couvre le cas qui passe, le cas refusé (avec le message), la route sans décorateur, l'identifiant absurde (sans requête en base) et la commande introuvable.
+</Exercice>
+
+</Exercices>

@@ -21,7 +21,7 @@ interface Bloc {
 }
 
 /** Retire les blocs de code (``` ou ~~~) pour ne pas compter les exemples qu'ils montrent. */
-const sansBlocsDeCode = (body: string) => body.replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[ \t]*$/gm, '');
+export const sansBlocsDeCode = (body: string) => body.replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[ \t]*$/gm, '');
 
 const numerosDe = (source: string) =>
 	[...source.matchAll(/<Exercice\b(?!s)[^>]*?\bnumero=["']([^"']*)["']/g)].map((m) => m[1] ?? '');
@@ -35,6 +35,9 @@ function blocsDe(source: string): Bloc[] {
 		return { partie: nombre('partie'), de: nombre('de'), a: nombre('a'), numeros: numerosDe(m[2] ?? '') };
 	});
 }
+
+/** Numéros (« 5.19 ») des <Exercice> d'une page, hors exemples dans des blocs de code. */
+export const numerosDExercices = (body: string) => numerosDe(sansBlocsDeCode(body));
 
 /** Partie d'après le dossier : « partie-8/… » ou « en/partie-8/… » → 8. */
 const partieDuDossier = (id: string) => {

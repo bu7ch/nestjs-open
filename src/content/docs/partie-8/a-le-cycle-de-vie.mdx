@@ -1,0 +1,206 @@
+---
+title: "a · Le cycle de vie"
+description: "L'ordre exact dans lequel une requête traverse middleware, guards, interceptors, pipes, handler et filtres."
+projet: loup-garou
+duree: 50
+prerequis: Parties 4 et 7 (pipes et guards), partie 6 (tests de bout en bout).
+exercices: 3
+sidebar:
+  order: 1
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Quand une requête arrive, elle ne va pas directement à ta méthode de contrôleur. Elle traverse une série de couches, chacune avec un rôle précis, et la réponse repasse par certaines d'entre elles au retour. Voici les six couches, dans l'ordre où la requête les rencontre :
+
+| Couche | Ce qu'elle voit | À quoi elle sert |
+|---|---|---|
+| **Middleware** | la requête et la réponse HTTP brutes | des traitements HTTP généraux : identifiant de requête, journal |
+| **Guard** | le contexte d'exécution : quelle méthode de quel contrôleur va être appelée | autoriser ou refuser (authentification, rôles, règles de jeu) |
+| **Interceptor**, avant | idem, plus le flux de la réponse à venir | mesurer, borner le temps, préparer |
+| **Pipe** | chaque paramètre de la méthode, un par un | transformer et valider (`ParseIntPipe`, `ValidationPipe`) |
+| **Handler** | tes paramètres, déjà validés | la méthode de ton contrôleur |
+| **Interceptor**, après | la valeur renvoyée par le handler | transformer la réponse, journaliser |
+
+Et si une exception est levée, où que ce soit, elle est récupérée par un **filtre d'exceptions**, qui fabrique la réponse d'erreur.
+
+## Trois niveaux d'application
+
+Chaque brique (sauf le middleware) peut être appliquée à trois niveaux : **globalement** (toute l'application), sur un **contrôleur**, ou sur une **route** (une méthode). Plusieurs guards ou interceptors peuvent donc s'empiler sur la même requête. L'ordre est toujours du plus général au plus précis : global, puis contrôleur, puis route.
+
+Pour les interceptors, ce qui se passe **après** le handler est parcouru en sens inverse : le dernier entré est le premier sorti, comme un empilement de poupées russes.
+
+## L'ordre, prouvé par un test
+
+Plutôt que de faire confiance à un schéma, on observe. Le test suivant place une trace dans chaque couche, à chaque niveau, envoie une requête, et vérifie l'ordre exact du journal.
+
+```ts title="test/ordre.e2e-spec.ts"
+const journal: string[] = [];
+const noter = (evenement: string) => journal.push(evenement);
+
+@Injectable()
+class MiddlewareTrace implements NestMiddleware {
+	use(_requete: unknown, _reponse: unknown, suivant: () => void) {
+		noter('middleware');
+		suivant();
+	}
+}
+
+function fabriquerGarde(nom: string) {
+	@Injectable()
+	class Garde implements CanActivate {
+		canActivate() {
+			noter(`guard ${nom}`);
+			return true;
+		}
+	}
+	return Garde;
+}
+
+function fabriquerInterceptor(nom: string) {
+	@Injectable()
+	class Trace implements NestInterceptor {
+		intercept(_contexte: ExecutionContext, suivant: CallHandler) {
+			noter(`interceptor ${nom} : avant`);
+			return suivant.handle().pipe(tap(() => noter(`interceptor ${nom} : après`)));
+		}
+	}
+	return Trace;
+}
+
+function fabriquerPipe(nom: string) {
+	@Injectable()
+	class Trace implements PipeTransform {
+		transform(valeur: unknown) {
+			noter(`pipe ${nom}`);
+			return valeur;
+		}
+	}
+	return Trace;
+}
+```
+
+Les trois fonctions `fabriquer…` servent seulement à produire, en une ligne, des classes qui ne diffèrent que par leur nom. Le contrôleur les assemble aux trois niveaux :
+
+```ts
+const GardeGlobal = fabriquerGarde('global');
+const GardeControleur = fabriquerGarde('contrôleur');
+const GardeRoute = fabriquerGarde('route');
+// … de même pour les interceptors (global, contrôleur, route) et les pipes (global, paramètre)
+
+@Controller('essai')
+@UseGuards(GardeControleur)
+@UseInterceptors(InterceptorControleur)
+class EssaiController {
+	@Get('ok/:id')
+	@UseGuards(GardeRoute)
+	@UseInterceptors(InterceptorRoute)
+	ok(@Param('id', PipeParametre) id: string) {
+		noter('handler');
+		return { id };
+	}
+
+	@Get('erreur')
+	@UseGuards(GardeRoute)
+	@UseInterceptors(InterceptorRoute)
+	@UseFilters(FiltreTrace)
+	erreur() {
+		noter('handler');
+		throw new HttpException('boum', 418);
+	}
+}
+
+@Module({
+	controllers: [EssaiController],
+	providers: [
+		{ provide: APP_GUARD, useClass: GardeGlobal },
+		{ provide: APP_INTERCEPTOR, useClass: InterceptorGlobal },
+		{ provide: APP_PIPE, useClass: PipeGlobal },
+	],
+})
+class EssaiModule {
+	configure(consommateur: MiddlewareConsumer) {
+		consommateur.apply(MiddlewareTrace).forRoutes('*');
+	}
+}
+```
+
+Et les deux tests, qui figent l'ordre observé :
+
+```ts
+it('traverse les couches dans l\'ordre, puis remonte les interceptors à l\'envers', async () => {
+	await request(app.getHttpServer()).get('/essai/ok/7').expect(200);
+	expect(journal).toEqual([
+		'middleware',
+		'guard global',
+		'guard contrôleur',
+		'guard route',
+		'interceptor global : avant',
+		'interceptor contrôleur : avant',
+		'interceptor route : avant',
+		'pipe global',
+		'pipe paramètre',
+		'handler',
+		'interceptor route : après',
+		'interceptor contrôleur : après',
+		'interceptor global : après',
+	]);
+});
+
+it('saute les « après » quand le handler lève une exception, et passe par le filtre', async () => {
+	await request(app.getHttpServer()).get('/essai/erreur').expect(418);
+	expect(journal).toEqual([
+		'middleware',
+		'guard global',
+		'guard contrôleur',
+		'guard route',
+		'interceptor global : avant',
+		'interceptor contrôleur : avant',
+		'interceptor route : avant',
+		'handler',
+		'filtre',
+	]);
+});
+```
+
+Ce journal est la meilleure documentation qui soit : si NestJS change un jour cet ordre, ce test le dira.
+
+## Ce que le journal enseigne
+
+**Les guards passent avant les pipes.** Le guard voit donc les paramètres de la route **bruts**, avant toute validation. `/api/villages/abc/votes` arrive au guard avec `id = 'abc'`, une chaîne, alors que le `ParseIntPipe` de la méthode ne s'exécutera que plus tard. Un guard qui utilise cet `id` sans le vérifier peut planter : c'est le sujet d'un piège de la section c.
+
+**Un pipe, lui, ne voit qu'un paramètre à la fois**, jamais la requête entière. Pour décider avec l'utilisateur, la phase du jeu et l'identifiant en même temps, il faut un guard.
+
+**L'erreur court-circuite le retour.** Dans le second test, le `tap(() => noter('… : après'))` des interceptors ne s'exécute jamais : `tap` réagit à une réponse réussie, pas à une exception. Si un interceptor doit agir aussi en cas d'erreur (journaliser un échec, par exemple), il doit le demander explicitement, ce que la section d montre.
+
+**Toutes les exceptions finissent au même endroit.** On a testé six façons d'échouer, avec un filtre global qui note ce qu'il reçoit :
+
+| Où l'erreur est levée | Le filtre la reçoit ? |
+|---|---|
+| Dans un middleware | oui (`Error`, statut `500`) |
+| Dans un guard | oui (`ForbiddenException`, statut `403`) |
+| Dans un interceptor | oui (`Error`, statut `500`) |
+| Dans un pipe | oui (`BadRequestException`, statut `400`) |
+| Dans le handler | oui (`Error`, statut `500`) |
+| Route qui n'existe pas | oui (`NotFoundException`, statut `404`) |
+
+Que l'erreur vienne d'un guard, d'un pipe ou de ton propre code, elle passe par le même filtre : c'est ce qui permet, en section e, d'uniformiser toutes les réponses d'erreur en un seul endroit.
+
+**Enregistre tes briques globales dans un module.** Un guard, un interceptor ou un pipe global se déclare avec `APP_GUARD`, `APP_INTERCEPTOR` ou `APP_PIPE` dans un module, comme le journal l'a fait ci-dessus. La partie 7 a montré pourquoi : un guard enregistré avec `app.useGlobalGuards(...)` dans `main.ts` n'existe pas dans les tests, qui ne passent pas par `main.ts`.
+
+<Exercices partie={8} de={1} a={3}>
+
+<Exercice numero="8.1" titre="Le journal d'exécution">
+Reproduis le test d'ordre dans ton projet, dans un module de test isolé : un middleware, un guard global, un interceptor global (avec son « après »), un pipe sur un paramètre, et un handler, chacun notant son passage dans un tableau. Envoie une requête, et vérifie l'ordre avec `toEqual`.
+</Exercice>
+
+<Exercice numero="8.2" titre="Trois niveaux">
+Ajoute un guard et un interceptor au niveau du contrôleur, et d'autres au niveau de la route. **Avant de lancer le test**, écris l'ordre que tu prédis pour les entrées et pour les sorties. Compare avec le journal réel : où t'es-tu trompé, s'il y a une différence ?
+</Exercice>
+
+<Exercice numero="8.3" titre="Où s'arrête la requête ?">
+Ajoute un filtre d'exceptions global qui note la classe de l'exception reçue, puis fais échouer tour à tour un middleware, un guard, un interceptor, un pipe et le handler, et appelle une route qui n'existe pas. Remplis le tableau de la section avec ce que tu observes : le filtre est-il appelé à chaque fois, et avec quel statut ?
+</Exercice>
+
+</Exercices>

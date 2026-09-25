@@ -54,7 +54,7 @@ app.use((req, res) => {
 
 Il doit être en dernier : Express essaie chaque route et chaque middleware **dans l'ordre d'écriture**, et s'arrête au premier qui répond.
 
-Tu retrouveras ce principe en partie 8, sous d'autres noms : les *guards*, *interceptors* et *pipes* de NestJS sont, eux aussi, du code qui s'intercale entre la requête et ta route — en plus structuré, et déclaré avec des décorateurs plutôt qu'avec `app.use`.
+Tu retrouveras ce principe sous d'autres noms : les *pipes* (partie 4), les *guards* (partie 7) et les *interceptors* de NestJS sont, eux aussi, du code qui s'intercale entre la requête et ta route — en plus structuré, et déclaré avec des décorateurs plutôt qu'avec `app.use`. La partie 8 les met tous côte à côte, avec les middlewares, et te montre dans quel ordre ils s'exécutent.
 
 <Exercices partie={2} de={12} a={14}>
 

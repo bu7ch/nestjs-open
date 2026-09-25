@@ -40,10 +40,14 @@ export function exercicesFaits(): string[] {
 	return faits;
 }
 
-/** Nombre d'exercices cochés par numéro de partie (« 8.5 » compte pour la partie 8). */
-export function faitsParPartie(): Map<number, number> {
+/**
+ * Nombre d'exercices cochés par numéro de partie (« 8.5 » compte pour la partie 8).
+ * Les numéros de `exclure` (les exercices des sections bonus) ne sont pas comptés.
+ */
+export function faitsParPartie(exclure: ReadonlySet<string> = new Set()): Map<number, number> {
 	const compte = new Map<number, number>();
 	for (const numero of exercicesFaits()) {
+		if (exclure.has(numero)) continue;
 		const partie = Number.parseInt(numero.split('.')[0] ?? '', 10);
 		if (Number.isInteger(partie)) compte.set(partie, (compte.get(partie) ?? 0) + 1);
 	}

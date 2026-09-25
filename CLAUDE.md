@@ -24,7 +24,7 @@ Cours en ligne gratuit pour apprendre NestJS en partant de zéro, sur le modèle
         <Exercice numero="8.5" titre="Cacher les prix négociés">Consigne…</Exercice>
       </Exercices>
 
-- Frontmatter des leçons (badges et encadré sous le titre) : `projet` (`loup-garou` | `marketplace`), `duree` (minutes), `prerequis` (texte court), `exercices` (nombre). **`exercices` doit correspondre au nombre de `<Exercice>` de la page** : la sidebar s'en sert pour savoir quand une partie est terminée. Un garde-fou (`src/verifierExercices.ts`, appelé par `src/routeData.ts`) fait échouer le build si ce nombre, la numérotation (`<Exercices de a>` et `numero`) ou l'unicité des numéros dans une langue ne sont pas respectés.
+- Frontmatter des leçons (badges et encadré sous le titre) : `projet` (`loup-garou` | `marketplace`), `duree` (minutes), `prerequis` (texte court), `exercices` (nombre), `bonus` (`true` pour une section facultative : ses exercices ne sont pas exigés pour terminer la partie dans la progression). **`exercices` doit correspondre au nombre de `<Exercice>` de la page** : la sidebar s'en sert pour savoir quand une partie est terminée. Un garde-fou (`src/verifierExercices.ts`, appelé par `src/routeData.ts`) fait échouer le build si ce nombre, la numérotation (`<Exercices de a>` et `numero`) ou l'unicité des numéros dans une langue ne sont pas respectés.
 - Maquettes validées : `design/*.dc.html`. Ce sont des exports d'un outil de maquette : lire le HTML et les styles inline comme référence visuelle, ignorer `support.js`, la syntaxe `{{…}}`, `<sc-for>`, `<sc-if>` et le bloc `<script type="text/x-dc">` (qui contient seulement les données d'exemple).
 - Tâche en cours : voir `HANDOFF.md`.
 

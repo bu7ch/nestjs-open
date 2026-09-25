@@ -1,0 +1,227 @@
+---
+title: "d · Les interceptors"
+description: "Envelopper l'exécution d'une route : transformer sa réponse, borner son temps, réagir à ses erreurs."
+projet: loup-garou
+duree: 60
+prerequis: Section c (les guards de jeu).
+exercices: 3
+sidebar:
+  order: 4
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Un **interceptor** s'enroule autour du handler : il agit **avant** qu'il s'exécute, et **après**, sur ce qu'il a renvoyé. C'est la seule couche qui voit à la fois la requête entrante et la réponse sortante, ce qui en fait l'outil idéal pour transformer une réponse, mesurer un temps, ou réagir à un échec.
+
+## Un flux, pas une valeur
+
+Un interceptor ne renvoie pas la réponse elle-même mais un **Observable**, un objet de la bibliothèque RxJS, déjà installée avec NestJS. Une promesse (partie 1, section b) produit **une** valeur, une fois. Un Observable produit un **flux** de valeurs dans le temps (zéro, une, plusieurs). Pour une route HTTP, ce flux ne contient qu'une valeur : celle que renvoie ton handler.
+
+Tout interceptor a la même forme :
+
+```ts
+intercept(contexte: ExecutionContext, suivant: CallHandler): Observable<unknown> {
+	// 1. ici : le code « avant » le handler
+	return suivant.handle().pipe(/* 2. ici : les opérateurs « après » */);
+}
+```
+
+`suivant.handle()` lance le handler (ou l'interceptor suivant) et renvoie son flux. `.pipe(...)` y branche des **opérateurs** qui transforment ce flux. Quatre suffisent à presque tout :
+
+| Opérateur | Ce qu'il fait |
+|---|---|
+| `map(f)` | transforme la valeur qui passe (la réponse) |
+| `tap(f)` | observe la valeur sans la changer (journal, mesure) |
+| `timeout(ms)` | échoue si aucune valeur n'arrive dans le délai |
+| `catchError(f)` | intercepte une erreur du flux, pour la traduire ou la remplacer |
+
+Un Observable est **paresseux** : rien ne s'exécute tant que personne ne s'y abonne. NestJS s'en charge, tu n'as jamais à le faire, sauf dans un test, où l'on récupère la valeur avec `firstValueFrom`.
+
+## Cacher le rôle des autres joueurs
+
+Dans un Loup-Garou, le secret des rôles est le cœur du jeu. `GET /api/villages/:id` renvoie tous les participants, avec leur rôle, mais chaque joueur ne doit voir que ce qu'il a le droit de savoir : **son propre rôle**, et celui des joueurs **morts** (dont le rôle est révélé à leur mort), mais pas celui des vivants. La règle vit dans un interceptor, appliqué à cette route :
+
+```ts title="src/villages/interceptors/masquer-roles.interceptor.ts" {9,11,12,16}
+import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
+import { map, Observable } from 'rxjs';
+import type { RequeteAuthentifiee } from '../../auth/types.js';
+import type { Village } from '../village.entity.js';
+
+@Injectable()
+export class MasquerRolesInterceptor implements NestInterceptor {
+	intercept(contexte: ExecutionContext, next: CallHandler): Observable<unknown> {
+		const utilisateurId = contexte.switchToHttp().getRequest<RequeteAuthentifiee>().utilisateur?.id;
+
+		return next.handle().pipe(
+			map((village: Village) => ({
+				...village,
+				participations: village.participations.map((participation) => ({
+					...participation,
+					role: participation.utilisateur.id === utilisateurId || !participation.vivant ? participation.role : null,
+				})),
+			})),
+		);
+	}
+}
+```
+
+```ts title="src/villages/villages.controller.ts" {2}
+@Get(':id')
+@UseInterceptors(MasquerRolesInterceptor)
+trouverUn(@Param('id', ParseIntPipe) id: number) {
+	return this.villagesService.trouverUn(id);
+}
+```
+
+- Ligne 9 : **avant** le handler, l'interceptor lit qui est l'utilisateur du jeton (posé par `AuthGuard`, qui s'exécute avant, comme la section a l'a montré).
+- Lignes 11 et 12 : `map` reçoit la valeur renvoyée par le handler, ici le village avec ses participations, et fabrique la réponse finale.
+- Ligne 16 : le rôle n'est conservé que pour soi-même et pour les morts. Pour tous les autres, il devient `null`.
+
+Le service, lui, renvoie toujours le village complet : il ne connaît pas l'utilisateur, et n'a pas à le connaître. La règle de confidentialité est **à un seul endroit**, applicable à d'autres routes en une ligne. La contrepartie : ce qui sort du handler contient encore les rôles, et un oubli du décorateur sur une nouvelle route les laisserait passer. NestJS fournit aussi `ClassSerializerInterceptor` et le décorateur `@Exclude()` pour retirer des champs de façon déclarative ; l'approche ci-dessus reste utile dès que la règle dépend de **qui regarde**.
+
+## Réagir aussi aux erreurs
+
+Dans la section a, on a vu que `tap(() => …)` ne s'exécute pas quand le handler lève une exception. Pour observer aussi les échecs, `tap` accepte un objet avec les deux cas :
+
+```ts
+return suivant.handle().pipe(
+	tap({
+		next: () => journal.push('succès'),
+		error: (erreur: Error) => journal.push(`échec vu : ${erreur.message}`),
+	}),
+);
+```
+
+Ici l'interceptor **observe** l'erreur mais ne l'arrête pas : elle continue vers le filtre, et le client reçoit son `418`. Si l'on veut au contraire **remplacer** l'erreur par une autre, c'est `catchError` :
+
+```ts
+return suivant.handle().pipe(
+	catchError((erreur: Error) => throwError(() => new HttpException(`traduit : ${erreur.message}`, 502))),
+);
+```
+
+On l'a vérifié sur deux routes qui échouent : avec `tap`, le journal note `échec vu : boum` et la réponse reste `418` ; avec `catchError`, la réponse devient `502` avec le message traduit.
+
+## Un temps maximal
+
+Une route qui traîne bloque un client, et parfois des ressources. Un interceptor peut imposer un délai :
+
+```ts title="src/commun/delai-maximal.interceptor.ts" {6,10,11}
+import { CallHandler, ExecutionContext, Injectable, NestInterceptor, RequestTimeoutException } from '@nestjs/common';
+import { catchError, Observable, throwError, timeout, TimeoutError } from 'rxjs';
+
+@Injectable()
+export class DelaiMaximalInterceptor implements NestInterceptor {
+	constructor(private readonly delaiEnMs: number) {}
+
+	intercept(_contexte: ExecutionContext, next: CallHandler): Observable<unknown> {
+		return next.handle().pipe(
+			timeout(this.delaiEnMs),
+			catchError((erreur) =>
+				throwError(() => (erreur instanceof TimeoutError ? new RequestTimeoutException('La requête a pris trop de temps') : erreur)),
+			),
+		);
+	}
+}
+```
+
+Le délai est un paramètre du constructeur (ligne 6), un nombre que NestJS ne saurait pas injecter : on crée donc l'interceptor soi-même, avec `new`, au moment de l'utiliser.
+
+```ts
+@Get('resume')
+@UseInterceptors(new DelaiMaximalInterceptor(2000))
+resume() { /* … */ }
+```
+
+`timeout` (ligne 10) fait échouer le flux avec une `TimeoutError` si le handler n'a rien renvoyé à temps ; `catchError` (ligne 11) la transforme en `RequestTimeoutException`, c'est-à-dire un statut `408`. Les autres erreurs passent telles quelles.
+
+Une précision importante, qu'on a mesurée : le `408` est renvoyé au client, mais **le handler continue de tourner**. Avec un handler qui met 200 ms et un délai de 50 ms, la réponse est un `408` immédiat, et 300 ms plus tard, le handler a fini son travail. L'interceptor **arrête d'attendre**, il n'annule rien : une écriture en base lancée par le handler aura lieu quand même.
+
+## Tester un interceptor
+
+Comme un guard, un interceptor est une classe avec une méthode : on l'appelle directement. `of(valeur)` fabrique un flux qui émet cette valeur, et `firstValueFrom` la récupère sous forme de promesse.
+
+```ts title="src/villages/interceptors/masquer-roles.interceptor.spec.ts"
+const contexteDe = (utilisateurId: number): ExecutionContext =>
+	({ switchToHttp: () => ({ getRequest: () => ({ utilisateur: { id: utilisateurId } }) }) }) as unknown as ExecutionContext;
+
+const village = {
+	id: 1,
+	participations: [
+		{ id: 1, role: 'villageois', vivant: true, utilisateur: { id: 10, pseudo: 'Alice' } },
+		{ id: 2, role: 'loup-garou', vivant: true, utilisateur: { id: 11, pseudo: 'Bob' } },
+		{ id: 3, role: 'voyante', vivant: false, utilisateur: { id: 12, pseudo: 'Clara' } },
+	],
+};
+
+describe('MasquerRolesInterceptor', () => {
+	const interceptor = new MasquerRolesInterceptor();
+	const suivant: CallHandler = { handle: () => of(village) };
+
+	it('garde le rôle du joueur qui regarde et celui des morts, masque les autres', async () => {
+		const resultat = (await firstValueFrom(interceptor.intercept(contexteDe(10), suivant))) as typeof village;
+		expect(resultat.participations.map((p) => p.role)).toEqual(['villageois', null, 'voyante']);
+	});
+
+	it('masque tous les vivants pour quelqu\'un qui ne joue pas', async () => {
+		const resultat = (await firstValueFrom(interceptor.intercept(contexteDe(99), suivant))) as typeof village;
+		expect(resultat.participations.map((p) => p.role)).toEqual([null, null, 'voyante']);
+	});
+
+	it('ne modifie pas la réponse d\'origine', async () => {
+		await firstValueFrom(interceptor.intercept(contexteDe(99), suivant));
+		expect(village.participations[1]?.role).toBe('loup-garou');
+	});
+});
+```
+
+Pour le délai maximal, un handler lent se fabrique avec `timer(200).pipe(map(() => 'lent'))`, un flux qui n'émet qu'au bout de 200 ms :
+
+```ts title="src/commun/delai-maximal.interceptor.spec.ts"
+const interceptor = new DelaiMaximalInterceptor(50);
+
+it('laisse passer une réponse rapide', async () => {
+	const suivant: CallHandler = { handle: () => of('rapide') };
+	await expect(firstValueFrom(interceptor.intercept(contexte, suivant))).resolves.toBe('rapide');
+});
+
+it('lève une RequestTimeoutException quand le handler dépasse le délai', async () => {
+	const suivant: CallHandler = { handle: () => timer(200).pipe(map(() => 'lent')) };
+	await expect(firstValueFrom(interceptor.intercept(contexte, suivant))).rejects.toThrow(new RequestTimeoutException('La requête a pris trop de temps'));
+});
+```
+
+Enfin, un test de bout en bout confirme le masquage avec les vrais guards et la vraie base :
+
+```ts title="test/jeu.e2e-spec.ts"
+it('montre son propre rôle, et celui des morts, mais masque les autres', async () => {
+	const alice = await creerJoueur('Alice');
+	const bob = await creerJoueur('Bob');
+	const clara = await creerJoueur('Clara');
+	const village = await creerVillage('jour');
+	await faireParticiper(village, alice.id, 'villageois');
+	await faireParticiper(village, bob.id, 'loup-garou');
+	await faireParticiper(village, clara.id, 'voyante', false);
+
+	const reponse = await http().get(`/api/villages/${village}`).set('Authorization', alice.entete).expect(200);
+	const roles = Object.fromEntries(reponse.body.participations.map((p: { utilisateur: { pseudo: string }; role: string | null }) => [p.utilisateur.pseudo, p.role]));
+	expect(roles).toEqual({ Alice: 'villageois', Bob: null, Clara: 'voyante' });
+});
+```
+
+<Exercices partie={8} de={11} a={13}>
+
+<Exercice numero="8.11" titre="Masquer les champs internes">
+Ajoute un champ interne à `Produit` (par exemple `prixAchat`, ce que le vendeur a payé), que seul le vendeur propriétaire du produit et un `admin` doivent voir. Écris un interceptor qui le retire (`undefined`) de la réponse pour tous les autres, et applique-le à `GET /api/produits` et `GET /api/produits/:id`. Teste-le en unitaire avec `of` et `firstValueFrom` : le propriétaire voit le champ, un autre vendeur et un acheteur non, la réponse d'origine n'est pas modifiée. Pense à la liste : l'interceptor reçoit un tableau.
+</Exercice>
+
+<Exercice numero="8.12" titre="Un temps maximal">
+Écris `DelaiMaximalInterceptor` et applique-le à une route de démonstration qui attend 200 ms avec un délai de 50 ms. Vérifie que la réponse est un `408`, puis, avec un test, que le handler a bien fini son travail quelques centaines de millisecondes plus tard : note ce que cela implique pour une route qui écrit en base.
+</Exercice>
+
+<Exercice numero="8.13" titre="Envelopper toutes les réponses">
+Écris un interceptor global (avec `APP_INTERCEPTOR`) qui renvoie chaque réponse sous la forme `{ "data": … }`, avec `map`. Lance toute ta suite de tests : lesquels échouent, et pourquoi ? Adapte-les. Vérifie enfin qu'une route qui répond `204` sans contenu fonctionne toujours.
+</Exercice>
+
+</Exercices>

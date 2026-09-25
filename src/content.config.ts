@@ -16,6 +16,8 @@ export const collections = {
 				prerequis: z.string().optional(),
 				/** Nombre d'exercices de la section (sert aussi au calcul de la progression). */
 				exercices: z.number().int().nonnegative().optional(),
+				/** Section facultative : ses exercices ne comptent pas pour terminer la partie. */
+				bonus: z.boolean().optional(),
 			}),
 		}),
 	}),
