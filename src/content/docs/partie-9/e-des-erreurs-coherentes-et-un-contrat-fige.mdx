@@ -178,7 +178,7 @@ Une condition pour que ça marche : le document doit être le **même** dans les
 <Exercices partie={9} de={13} a={15}>
 
 <Exercice numero="9.13" titre="Un détail par champ">
-Ajoute `exceptionFactory` à ton `ValidationPipe` et fais transmettre `champs` par ton filtre. Écris les tests : deux champs invalides dans une même requête donnent deux entrées dans `champs`, un paramètre inconnu est nommé dans `champs`, et un `404` n'a pas de `champs`. Vérifie que les tests de la partie 8 (exercice 8.14) passent toujours.
+Ajoute `exceptionFactory` à ton `ValidationPipe` et fais transmettre `champs` par ton filtre. Écris les tests : deux champs invalides dans une même requête donnent deux entrées dans `champs`, un paramètre inconnu est nommé dans `champs`, et un `404` n'a pas de `champs`. Vérifie que tes tests de la partie 8 (exercice 8.14) passent toujours ; s'il en est un qui compare exactement les clés d'une erreur `400`, assouplis-le : `champs` y figure désormais.
 </Exercice>
 
 <Exercice numero="9.14" titre="Documenter les erreurs">

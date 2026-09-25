@@ -180,7 +180,7 @@ Les variantes deviennent une table : crée l'entité `Variante` (`id`, `nom`, `s
 </Exercice>
 
 <Exercice numero="5.12" titre="Une commande et ses lignes">
-Crée `Commande` (`id`, `dateCommande` avec `@CreateDateColumn()`) et `LigneCommande` (`id`, `quantite`), reliée à sa commande (`onDelete: 'CASCADE'`) et à une `Variante`. Sur `Commande`, déclare `lignes` avec `{ cascade: true }` : `save` écrit alors la commande et toutes ses lignes d'un coup. `POST /api/commandes` reçoit `{ "lignes": [{ "varianteId": 1, "quantite": 2 }] }` (la validation de tableaux imbriqués, avec `@ValidateNested`, dépasse cette partie : on s'en passe ici), et `GET /api/commandes/:id` renvoie la commande avec ses lignes, leur variante, et le produit de chacune.
+Crée `Commande` (`id`, `dateCommande` avec `@CreateDateColumn()`) et `LigneCommande` (`id`, `quantite`), reliée à sa commande (`onDelete: 'CASCADE'`) et à une `Variante`. Sur `Commande`, déclare `lignes` avec `{ cascade: true }` : `save` écrit alors la commande et toutes ses lignes d'un coup. `POST /api/commandes` reçoit `{ "lignes": [{ "varianteId": 1, "quantite": 2 }] }` (la validation complète des tableaux imbriqués, avec `@ValidateNested`, dépasse cette partie ; mais avec `forbidNonWhitelisted`, ton DTO doit au moins déclarer `lignes` avec `@IsArray()`, sinon la requête est refusée), et `GET /api/commandes/:id` renvoie la commande avec ses lignes, leur variante, et le produit de chacune.
 </Exercice>
 
 <Exercice numero="5.13" titre="Casser l'intégrité, exprès">

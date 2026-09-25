@@ -126,11 +126,11 @@ Active le versionnement par URL avec `VERSION_NEUTRAL` sur ta marketplace. Garde
 </Exercice>
 
 <Exercice numero="9.5" titre="Annoncer la fin de l'ancienne version">
-Sur l'ancienne route, ajoute les en-têtes `Deprecation` et `Sunset` (une date dans un an) et marque-la `deprecated: true` dans Swagger. Écris deux tests : la v1 envoie les en-têtes, la v2 n'en envoie aucun. Vérifie dans `/docs` que la v1 est barrée et que les deux chemins apparaissent.
+Sur l'ancienne route, ajoute les en-têtes `Deprecation` et `Sunset` (une date fixe dans le futur, par exemple le 31 décembre 2031) et marque-la `deprecated: true` dans Swagger. Écris deux tests : la v1 envoie les en-têtes, la v2 n'en envoie aucun. Vérifie dans `/docs` que la v1 est barrée et que les deux chemins apparaissent.
 </Exercice>
 
 <Exercice numero="9.6" titre="Les routes inchangées">
-Ajoute `GET /api/produits/:id` (sans version). Vérifie par un test que `/v2/api/produits/1` répond `404`, puis corrige avec `@Version([VERSION_NEUTRAL, '2'])` et montre que les deux adresses répondent alors `200` et que `/v1/api/produits/1` reste un `404`. Note dans un commentaire de test pourquoi ce dernier cas est normal.
+Vérifie que `GET /api/produits/:id`, écrit en partie 3 sans version, répond toujours. Vérifie par un test que `/v2/api/produits/1` répond `404`, puis corrige avec `@Version([VERSION_NEUTRAL, '2'])` et montre que les deux adresses répondent alors `200` et que `/v1/api/produits/1` reste un `404`. Note dans un commentaire de test pourquoi ce dernier cas est normal.
 </Exercice>
 
 </Exercices>

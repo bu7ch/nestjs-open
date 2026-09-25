@@ -103,7 +103,7 @@ Installe `@nestjs/config`, ajoute `ConfigModule.forRoot({ isGlobal: true })` à 
 </Exercice>
 
 <Exercice numero="4.12" titre="Limiter la création de produits">
-Injecte `ConfigService` dans `ProduitsService`. Dans la méthode qui crée un produit, refuse-la (avec `BadRequestException`) si le nombre de produits existants a atteint `NOMBRE_MAX_PRODUITS`. Vérifie avec une petite valeur (par exemple `1`) que la deuxième création échoue bien.
+Injecte `ConfigService` dans `ProduitsService`. Dans la méthode qui crée un produit, refuse-la (avec `BadRequestException`) si le nombre de produits existants a atteint `NOMBRE_MAX_PRODUITS`. Vérifie avec une petite valeur (par exemple `1`) que la création échoue dès que la limite est atteinte : comme ta marketplace contient déjà quelques produits, c'est la toute prochaine création qui échoue, pas la deuxième.
 </Exercice>
 
 <Exercice numero="4.13" titre="Casser la validation, exprès">

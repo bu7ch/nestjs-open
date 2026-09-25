@@ -30,4 +30,4 @@ An exercises repository, `nestjs-open-exercices`, holds an empty NestJS project 
 
 The tests check your API's behavior and the structure the exercises ask for, not your style. "Manual" exercises (installing, reading an error message, breaking something on purpose) are not tested: tick them yourself on the site. For each covered part, the repository also holds a solution that GitHub Actions verifies on every change: it proves the exercises are doable, and can unblock you once you have tried.
 
-The repository follows the writing of the course: as of now, the tests cover **part 3**. Under the exercises of other parts, no command is shown until they are covered.
+The repository follows the writing of the course: as of now, the tests cover **parts 3 to 9**. Under the exercises of later parts, no command is shown until they are covered. From part 5 on, the tests need PostgreSQL: `docker compose up -d` (or Podman) starts the repository's one.

@@ -211,7 +211,7 @@ Et un test unitaire pour la petite fonction `creerPage`, sans aucune base : 57 �
 <Exercices partie={9} de={7} a={9}>
 
 <Exercice numero="9.7" titre="Paginer le catalogue">
-Ajoute `PaginationDto`, `creerPage` et `ApiPage` à ta marketplace, puis fais de `GET /v2/api/produits` une liste paginée (`page`, `limite`, plafond de 100). Écris les tests de bout en bout : la page 3 d'une liste de 25 produits par 10, une page hors limites (`200` et liste vide) et les valeurs refusées (`page=0`, `limite=101`, `page=abc`).
+Ajoute `PaginationDto`, `creerPage` et `ApiPage` à ta marketplace, puis fais de `GET /v2/api/produits` une liste paginée (`page`, `limite`, plafond de 100). Écris les tests de bout en bout : la page 3 d'une liste de 25 produits par 10, une page hors limites (`200` et liste vide) et les valeurs refusées (`page=0`, `limite=101`, `page=abc`). Si un interceptor de la partie 8 (8.11, 8.13) transforme tes réponses, vérifie qu'il traverse bien la page : sinon des champs internes comme `prixAchat` fuient en v2.
 </Exercice>
 
 <Exercice numero="9.8" titre="Le piège du @Type">
@@ -219,7 +219,7 @@ Retire `@Type(() => Number)` de ta `PaginationDto` et note le message d'erreur e
 </Exercice>
 
 <Exercice numero="9.9" titre="Le curseur">
-Ajoute `GET /v2/api/produits/curseur` (paramètres `apres` et `limite`, réponse `{ donnees, curseurSuivant }`). Écris un test qui parcourt 25 produits par 10 sans doublon ni oubli, et un test qui montre qu'un produit ajouté entre deux pages numérotées provoque un doublon alors que le curseur n'en produit pas.
+Ajoute `GET /v2/api/produits/curseur` (paramètres `apres` et `limite`, réponse `{ donnees, curseurSuivant }`). Déclare la route **avant** `GET /api/produits/:id`, sinon `curseur` est pris pour un identifiant. Écris un test qui parcourt 25 produits par 10 sans doublon ni oubli, et un test qui montre qu'un produit ajouté entre deux pages numérotées, triées par identifiant décroissant, provoque un doublon alors que le curseur n'en produit pas.
 </Exercice>
 
 </Exercices>

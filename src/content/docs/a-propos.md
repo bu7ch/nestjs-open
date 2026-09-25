@@ -36,4 +36,4 @@ Un dépôt d'exercices, `nestjs-open-exercices`, contient un projet NestJS vide 
 
 Les tests vérifient le comportement de ton API et la structure demandée par les exercices, pas ton style. Les exercices « manuels » (installer, lire un message d'erreur, casser quelque chose exprès) ne sont pas testés : tu les coches toi-même sur le site. Le dépôt contient aussi, pour chaque partie couverte, une solution que GitHub Actions vérifie à chaque changement : elle prouve que les exercices sont faisables, et te dépanne une fois que tu as essayé.
 
-Le dépôt suit la rédaction du cours : à ce jour, les tests couvrent la **partie 3**. Sous les exercices des autres parties, aucune commande n'est affichée tant qu'ils ne sont pas couverts.
+Le dépôt suit la rédaction du cours : à ce jour, les tests couvrent les **parties 3 à 9**. Sous les exercices des parties suivantes, aucune commande n'est affichée tant qu'elles ne sont pas couvertes. À partir de la partie 5, les tests ont besoin de PostgreSQL : `docker compose up -d` (ou Podman) lance celui du dépôt.

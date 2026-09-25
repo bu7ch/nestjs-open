@@ -183,7 +183,7 @@ it.each(['tri=motdepasse', 'ordre=up', 'phase=aube'])('refuse ?%s avec 400', asy
 <Exercices partie={9} de={10} a={12}>
 
 <Exercice numero="9.10" titre="Filtrer le catalogue">
-Ajoute à `GET /v2/api/produits` les filtres `categorie`, `prixMin` et `prixMax` (en centimes, entiers positifs), et n'affiche que les produits actifs. `prixMin` supérieur à `prixMax` doit donner un `400` avec un message explicite (`prixMin ne peut pas dépasser prixMax`). Écris les tests : un filtre combiné, un total qui suit le filtre, et le `400`.
+Ajoute à `GET /v2/api/produits` les filtres `categorie`, `prixMin` et `prixMax` (des nombres positifs, dans la même unité que ton prix), et n'affiche que les produits actifs. `prixMin` supérieur à `prixMax` doit donner un `400` avec un message explicite (`prixMin ne peut pas dépasser prixMax`). Écris les tests : un filtre combiné, un total qui suit le filtre, et le `400`.
 </Exercice>
 
 <Exercice numero="9.11" titre="Trier avec une liste blanche">

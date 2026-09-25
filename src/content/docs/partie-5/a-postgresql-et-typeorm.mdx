@@ -159,7 +159,7 @@ docker compose exec db psql -U loupgarou -d loupgarou -c '\dt'
 <Exercices partie={5} de={1} a={4}>
 
 <Exercice numero="5.1" titre="Une base pour la marketplace">
-Écris un `docker-compose.yml` avec un service PostgreSQL 16 (utilisateur, mot de passe et base nommés `marketplace`) et lance-le, avec Docker ou avec Podman. Installe `@nestjs/typeorm`, `typeorm` et `pg`. Ajoute les cinq variables `DB_*` à ton `.env`, et branche `TypeOrmModule.forRootAsync` dans `AppModule` (avec `autoLoadEntities` et `synchronize`). Vérifie que le serveur démarre sans erreur.
+Écris un `compose.yaml` (ou `docker-compose.yml` ; le dépôt d'exercices en fournit un déjà prêt) avec un service PostgreSQL 16 (utilisateur, mot de passe et base nommés `marketplace`) et lance-le, avec Docker ou avec Podman. Installe `@nestjs/typeorm`, `typeorm` et `pg`. Ajoute les cinq variables `DB_*` à ton `.env`, et branche `TypeOrmModule.forRootAsync` dans `AppModule` (avec `autoLoadEntities` et `synchronize`). Vérifie que le serveur démarre sans erreur.
 </Exercice>
 
 <Exercice numero="5.2" titre="Couper la base, exprès">

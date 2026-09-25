@@ -117,7 +117,7 @@ Ajoute `DELETE /api/vendeurs/:id` avec `@HttpCode(204)`, en t'appuyant sur `affe
 </Exercice>
 
 <Exercice numero="5.8" titre="Les produits quittent la mémoire">
-Crée l'entité `Produit` (`id`, `nom`, `prix` en `numeric`, `categorie`) et remplace le tableau en mémoire de `ProduitsService` par son repository. **Toutes** les routes des parties 3 et 4 doivent continuer à fonctionner : la liste avec `?limite=` (`take`), `GET /api/produits/:id`, `GET /api/produits/categorie/:categorie` (`where`), la liste des catégories sans doublon (exercice 3.11 : `find` avec `select`, puis `Set`), et la création validée avec sa limite `NOMBRE_MAX_PRODUITS` (indice : `count()`). Retire `variantes` du DTO : elles reviendront en 5.11, sous la forme d'une vraie table. Vérifie que `prix` revient sous forme de chaîne, et note pourquoi.
+Crée l'entité `Produit` (`id`, `nom`, `prix` en `numeric`, `categorie`) et remplace le tableau en mémoire de `ProduitsService` par son repository. **Toutes** les routes des parties 3 et 4 doivent continuer à fonctionner : la liste avec `?limite=` (`take`), `GET /api/produits/:id`, `GET /api/produits/categorie/:categorie` (`where`), la liste des catégories sans doublon (exercice 3.11 : `find` avec `select`, puis `Set`), et la création validée avec sa limite `NOMBRE_MAX_PRODUITS` (indice : `count()`). Retire `variantes` du DTO : elles reviendront en 5.11, sous la forme d'une vraie table (les vérifications des exercices 4.2, 4.5 et 4.7 sur ce champ ne s'appliquent plus d'ici là). Nomme la table `produits` (`@Entity('produits')`) et place l'entité dans un fichier `*.entity.ts` ; fais de même pour `variantes` (5.11) et `lignes_commande` (5.12). Vérifie que `prix` revient sous forme de chaîne, et note pourquoi.
 </Exercice>
 
 </Exercices>
