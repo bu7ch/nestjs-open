@@ -26,4 +26,8 @@ Part 12 takes both projects to their full version, with professional specificati
 
 ## Submitting exercises
 
-For each part, a template repository holds the exercise tests. Fork it, code, and GitHub Actions runs the tests on every push.
+An exercises repository, `nestjs-open-exercices`, holds an empty NestJS project and the exercise tests. Fork it, build your marketplace in it as you go through the parts, and check with `npm run test:partie-N` (for example `npm run test:partie-3`). GitHub Actions runs the same tests on every push to your fork.
+
+The tests check your API's behavior and the structure the exercises ask for, not your style. "Manual" exercises (installing, reading an error message, breaking something on purpose) are not tested: tick them yourself on the site. For each covered part, the repository also holds a solution that GitHub Actions verifies on every change: it proves the exercises are doable, and can unblock you once you have tried.
+
+The repository follows the writing of the course: as of now, the tests cover **part 3**. Under the exercises of other parts, no command is shown until they are covered.

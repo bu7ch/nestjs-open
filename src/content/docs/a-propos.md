@@ -32,4 +32,8 @@ La partie 12 reprend ces deux projets dans leur version complète, avec des cahi
 
 ## Rendre ses exercices
 
-Pour chaque partie, un dépôt modèle contient les tests des exercices. Tu le forkes, tu codes, et GitHub Actions lance les tests à chaque push.
+Un dépôt d'exercices, `nestjs-open-exercices`, contient un projet NestJS vide et les tests des exercices. Tu le forkes, tu y construis ta marketplace au fil des parties, et tu vérifies avec `npm run test:partie-N` (par exemple `npm run test:partie-3`). GitHub Actions relance les mêmes tests à chaque push sur ton fork.
+
+Les tests vérifient le comportement de ton API et la structure demandée par les exercices, pas ton style. Les exercices « manuels » (installer, lire un message d'erreur, casser quelque chose exprès) ne sont pas testés : tu les coches toi-même sur le site. Le dépôt contient aussi, pour chaque partie couverte, une solution que GitHub Actions vérifie à chaque changement : elle prouve que les exercices sont faisables, et te dépanne une fois que tu as essayé.
+
+Le dépôt suit la rédaction du cours : à ce jour, les tests couvrent la **partie 3**. Sous les exercices des autres parties, aucune commande n'est affichée tant qu'ils ne sont pas couverts.

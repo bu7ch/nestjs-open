@@ -14,6 +14,7 @@
 	"exercices.titre_one": "Exercise {{de}}",
 	"exercices.titre_other": "Exercises {{de}} to {{a}}",
 	"exercices.verifier": "To check your work:",
+	"exercices.depot": "(exercises repository)",
 	"progression.titre": "Your progress",
 	"progression.parties_one": "{{n}} part completed out of {{total}}",
 	"progression.parties_other": "{{n}} parts completed out of {{total}}",

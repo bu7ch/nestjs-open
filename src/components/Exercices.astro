@@ -1,11 +1,12 @@
 ---
+import { DEPOT_EXERCICES, PARTIES_AVEC_TESTS } from '../site.mjs';
 // Bloc d'exercices en fin de section, façon Full Stack Open.
 // Usage MDX :
 //   <Exercices partie={8} de={5} a={7}>
 //     <Exercice numero="8.5" titre="Cacher les prix négociés">Consigne…</Exercice>
 //   </Exercices>
 // `projet` : badge affiché (par défaut « marketplace » de la partie 3 à la partie 11).
-// `test` : commande de vérification (par défaut npm run test:partie-N ; false pour la masquer).
+// `test` : commande de vérification (par défaut npm run test:partie-N pour les parties de PARTIES_AVEC_TESTS, rien sinon ; false pour la masquer).
 interface Props {
 	partie: number;
 	de: number;
@@ -15,7 +16,7 @@ interface Props {
 }
 const { partie, de, a } = Astro.props;
 const projet = Astro.props.projet ?? (partie >= 3 && partie <= 11 ? 'marketplace' : false);
-const test = Astro.props.test ?? `npm run test:partie-${partie}`;
+const test = Astro.props.test ?? (PARTIES_AVEC_TESTS.includes(partie) ? `npm run test:partie-${partie}` : false);
 const t = Astro.locals.t;
 const titre = t('exercices.titre', { count: a - de + 1, de: `${partie}.${de}`, a: `${partie}.${a}` });
 const id = `exercices-${partie}-${de}`;
@@ -32,7 +33,7 @@ const id = `exercices-${partie}-${de}`;
 	{
 		test && (
 			<p class="test not-content">
-				<span class="test-label">{t('exercices.verifier')}</span> <code>{test}</code>
+				<span class="test-label">{t('exercices.verifier')}</span> <code>{test}</code> <a href={DEPOT_EXERCICES}>{t('exercices.depot')}</a>
 			</p>
 		)
 	}

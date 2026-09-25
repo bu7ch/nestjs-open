@@ -45,6 +45,7 @@ export const collections = {
 				'exercices.titre_one': z.string().optional(),
 				'exercices.titre_other': z.string().optional(),
 				'exercices.verifier': z.string().optional(),
+				'exercices.depot': z.string().optional(),
 				'progression.titre': z.string().optional(),
 				'progression.parties_one': z.string().optional(),
 				'progression.parties_other': z.string().optional(),
