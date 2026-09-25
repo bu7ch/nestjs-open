@@ -211,7 +211,7 @@ Et un test unitaire pour la petite fonction `creerPage`, sans aucune base : 57 �
 <Exercices partie={9} de={7} a={9}>
 
 <Exercice numero="9.7" titre="Paginer le catalogue">
-Ajoute `PaginationDto`, `creerPage` et `ApiPage` à ta marketplace, puis fais de `GET /v2/api/produits` une liste paginée (`page`, `limite`, plafond de 100). Écris les tests de bout en bout : la page 3 d'une liste de 25 produits par 10, une page hors limites (`200` et liste vide) et les valeurs refusées (`page=0`, `limite=101`, `page=abc`). Si un interceptor de la partie 8 (8.11, 8.13) transforme tes réponses, vérifie qu'il traverse bien la page : sinon des champs internes comme `prixAchat` fuient en v2.
+Ajoute `PaginationDto`, `creerPage` et `ApiPage` à ta marketplace, puis fais de `GET /v2/api/produits` une liste paginée (`page`, `limite`, plafond de 100). Écris les tests de bout en bout : la page 3 d'une liste de 25 produits par 10, une page hors limites (`200` et liste vide) et les valeurs refusées (`page=0`, `limite=101`, `page=abc`). Si un interceptor de la partie 8 transforme tes réponses, vérifie qu'il traverse bien la page : celui du 8.11 doit masquer `prixAchat` dans `donnees` (il recevait un tableau, il reçoit maintenant une page), sinon le champ fuit en v2. Avec l'enveloppe `{ "data": … }` du 8.13, la page arrive sous `data` (`reponse.body.data.donnees`) : documente-la aussi dans `ApiPage`, en entourant le schéma d'un `properties: { data: … }`.
 </Exercice>
 
 <Exercice numero="9.8" titre="Le piège du @Type">

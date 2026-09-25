@@ -275,7 +275,7 @@ Une quantité de 0, négative ou non entière n'a pas de sens : `calculerTotal` 
 </Exercice>
 
 <Exercice numero="6.5" titre="Les transitions d'une commande">
-Une commande passe par les statuts `en_attente`, `payee`, `expediee`, `livree`, ou finit `annulee` (seulement depuis `en_attente` ou `payee`). Écris `transitionner(actuel, cible)`, qui renvoie le nouveau statut ou lève `Passage impossible : … vers …`. Teste au moins quatre passages autorisés et quatre refusés, avec `it.each`, en incluant `livree` vers `annulee` et `en_attente` vers `livree`.
+Une commande passe par les statuts `en_attente`, `payee`, `expediee`, `livree`, ou finit `annulee` (seulement depuis `en_attente` ou `payee`). Écris `transitionner(actuel, cible)` (une fonction exportée, dans le fichier de ton choix sous `src/`), qui renvoie le nouveau statut ou lève `Passage impossible : … vers …`. Seuls les passages `en_attente → payee → expediee → livree` et l'annulation décrite ci-dessus sont permis : tout le reste est refusé, y compris rester sur le même statut ou sauter une étape (`payee → livree`). Teste au moins quatre passages autorisés et quatre refusés, avec `it.each`, en incluant `livree` vers `annulee` et `en_attente` vers `livree`.
 </Exercice>
 
 </Exercices>

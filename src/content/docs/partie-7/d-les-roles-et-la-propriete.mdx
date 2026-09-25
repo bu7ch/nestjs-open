@@ -183,7 +183,7 @@ Inverse les deux `APP_GUARD` et relance les tests e2e. Note les codes obtenus à
 </Exercice>
 
 <Exercice numero="7.14" titre="Ne modifier que ses propres produits">
-Un produit appartient à un vendeur, qui appartient à un compte (ajoute cette relation à `Vendeur`). Ajoute `PATCH /api/produits/:id`, qui renomme un produit : le propriétaire et un `admin` peuvent le faire, un autre vendeur reçoit `403` (`Ce produit ne t'appartient pas`), un produit inconnu `404`. Teste avec deux comptes vendeurs, et avec un troisième passé `admin`. N'accepte aucun identifiant de propriétaire dans le corps de la requête.
+Un produit appartient à un vendeur, qui appartient à un compte (ajoute cette relation à `Vendeur`, avec sa migration ; le cours n'a pas de route pour rattacher un vendeur à un compte : dans tes tests, fais-le avec `save` ou un `UPDATE`). Ajoute `PATCH /api/produits/:id`, qui renomme un produit : le propriétaire et un `admin` peuvent le faire, un autre vendeur reçoit `403` (`Ce produit ne t'appartient pas`), un produit inconnu `404`. Teste avec deux comptes vendeurs, et avec un troisième passé `admin`. N'accepte aucun identifiant de propriétaire dans le corps de la requête.
 </Exercice>
 
 </Exercices>

@@ -167,7 +167,7 @@ Retire `configurerApp(app)` de ton test (ou, si tu n'as pas encore extrait la fo
 </Exercice>
 
 <Exercice numero="6.11" titre="Une seule configuration pour l'appli et les tests">
-Extrais `configurerApp` dans `src/configurer-app.ts`, appelle-la depuis `main.ts` **et** depuis ton test. Vérifie avec `curl` que le serveur lancé refuse toujours une quantité de 0, puis que `npm run test:e2e` passe. Ajoute enfin un préfixe global `app.setGlobalPrefix('v1')` dans `configurerApp` : les tests échouent avec des `404` : que doivent devenir les URLs de ton test, et pourquoi n'as-tu rien à changer dans `main.ts` ?
+Extrais `configurerApp` dans `src/configurer-app.ts`, appelle-la depuis `main.ts` **et** depuis ton test. Vérifie avec `curl` que le serveur lancé refuse toujours une quantité de 0, puis que `npm run test:e2e` passe. Ajoute enfin un préfixe global `app.setGlobalPrefix('v1')` dans `configurerApp` : les tests échouent avec des `404` : que doivent devenir les URLs de ton test, et pourquoi n'as-tu rien à changer dans `main.ts` ? Si tu gardes ce préfixe, les tests des parties suivantes devront le contenir aussi : tu peux le retirer une fois l'exercice fait.
 </Exercice>
 
 </Exercices>

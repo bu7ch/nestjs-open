@@ -256,11 +256,11 @@ Les états de jeu (village, participations) sont posés directement par SQL : c'
 <Exercices partie={8} de={7} a={10}>
 
 <Exercice numero="8.7" titre="Un guard de statut">
-Ajoute à `Commande` une colonne `statut` (`en_attente` par défaut, avec la migration de la partie 5). Écris `@StatutRequis('payee')` et un guard qui charge la commande de la route, et refuse (`403`, avec le statut actuel dans le message) si son statut ne correspond pas. Protège `POST /api/commandes/:id/expedier` avec, et vérifie qu'une commande `en_attente` reçoit `403`, alors qu'une commande `payee` passe.
+Ajoute à `Commande` une colonne `statut` (`en_attente` par défaut, avec la migration de la partie 5). Écris `@StatutRequis('payee')` et un guard qui charge la commande de la route, et refuse (`403`, avec le statut actuel dans le message) si son statut ne correspond pas. Protège `POST /api/commandes/:id/expedier` avec (la route peut se contenter de répondre `200` : c'est le guard qui compte), et vérifie qu'une commande `en_attente` reçoit `403`, alors qu'une commande `payee` passe.
 </Exercice>
 
 <Exercice numero="8.8" titre="Isoler les vendeurs">
-Écris un guard qui protège `GET /api/vendeurs/:vendeurId/commandes` : le compte connecté doit être le propriétaire de ce vendeur (relation `Vendeur` vers `Compte`, exercice 7.14), ou un `admin`. Un vendeur qui demande les commandes d'un autre reçoit `403`, un vendeur inconnu `404`. Teste avec deux comptes vendeurs et un admin.
+Écris un guard qui protège `GET /api/vendeurs/:vendeurId/commandes` : le compte connecté doit être le propriétaire de ce vendeur (relation `Vendeur` vers `Compte`, exercice 7.14), ou un `admin`. La route renvoie la liste (un tableau) des commandes du vendeur ; son contenu exact est libre. Un vendeur qui demande les commandes d'un autre reçoit `403`, un vendeur inconnu `404`. Teste avec deux comptes vendeurs et un admin.
 </Exercice>
 
 <Exercice numero="8.9" titre="Faire confiance à :id, exprès">

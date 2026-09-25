@@ -200,7 +200,7 @@ Installe `@clerk/backend`. Écris un script qui génère une paire de clés RSA,
 </Exercice>
 
 <Exercice numero="7.25" titre="Le guard Clerk et son profil local">
-Écris `ClerkGuard`, l'entité `ProfilClerk` et `ProfilsService.trouverOuCreer` avec `upsert`, et teste-les avec des jetons signés localement : profil créé à la première requête, réutilisé ensuite, jeton refusé dans les quatre cas sans profil créé. Ajoute le test des cinq requêtes simultanées. Remplace enfin `upsert` par « chercher puis créer » et relance ce test plusieurs fois : il peut réussir, puis échouer avec des `500`. Remets `upsert`.
+Écris `ClerkGuard` (qui range le profil sur la requête, comme dans la leçon : `requete.profil`), l'entité `ProfilClerk` (rôle par défaut `joueur`, comme dans la leçon) et `ProfilsService.trouverOuCreer` avec `upsert`, et teste-les avec des jetons signés localement : profil créé à la première requête, réutilisé ensuite, jeton refusé dans les quatre cas sans profil créé. Ajoute le test des cinq requêtes simultanées. Remplace enfin `upsert` par « chercher puis créer » et relance ce test plusieurs fois : il peut réussir, puis échouer avec des `500`. Remets `upsert`.
 </Exercice>
 
 <Exercice numero="7.26" titre="Brancher un vrai compte Clerk (facultatif)">

@@ -60,7 +60,7 @@ Termine `EquipesController` : `GET /api/equipes` renvoie la liste, `GET /api/equ
 </Exercice>
 
 <Exercice numero="4.18" titre="Les joueurs, et le lien vers leur équipe">
-Crée un module `joueurs`, sur le même modèle : un tableau en mémoire de joueurs (`id`, `prenom`, `nom`, `poste`, `equipeId`). Injecte `EquipesService` dans `JoueursService` (exporte-le depuis `EquipesModule`, importe `EquipesModule` dans `JoueursModule`) pour que `GET /api/joueurs/:id` renvoie le joueur avec son équipe complète imbriquée, pas juste son `equipeId`. `404` si le joueur n'existe pas.
+Crée un module `joueurs`, sur le même modèle : un tableau en mémoire de joueurs (`id`, `prenom`, `nom`, `poste`, `equipeId`). Injecte `EquipesService` dans `JoueursService` (exporte-le depuis `EquipesModule`, importe `EquipesModule` dans `JoueursModule`) pour que `GET /api/joueurs/:id` renvoie le joueur avec son équipe complète imbriquée, pas juste son `equipeId` (sous une clé `equipe`, par exemple). `404` si le joueur n'existe pas. Ajoute aussi `GET /api/joueurs`, qui renvoie la liste des joueurs (l'exercice 4.21 la limitera).
 </Exercice>
 
 <Exercice numero="4.19" titre="Filtrer par poste">
