@@ -296,7 +296,7 @@ Complète le `compose.yaml` du dépôt d'exercices avec les services `redis`, `m
 </Exercice>
 
 <Exercice numero="10.8" titre="Le compteur partagé">
-Ajoute `RedisModule`, `RedisThrottlerStorage`, et `REDIS_HOST` / `REDIS_PORT` à ta validation d'environnement (et à `.env.test`). Ajoute `await app.get<Redis>(REDIS).flushdb()` avant chaque test de ton fichier des abus (exercice 7.18) : sans cette ligne, lance-le deux fois de suite et note le statut reçu à la première tentative. Puis, avec Compose : cinq mauvaises connexions (`401`), `docker compose restart api`, et une sixième qui doit répondre `429`.
+Ajoute `RedisModule`, `RedisThrottlerStorage`, et `REDIS_HOST` / `REDIS_PORT` à ta validation d'environnement (et à `.env.test`). Ajoute `await app.get<Redis>(REDIS).flushdb()` avant chaque test de ton fichier des abus (exercice 7.18) : sans cette ligne, lance-le deux fois de suite et note le statut reçu à la première tentative. `flushdb` vide toute la base Redis : ne le fais tourner que sur le Redis de test, jamais sur celui de ton développement. Puis, avec Compose : cinq mauvaises connexions (`401`), `docker compose restart api`, et une sixième qui doit répondre `429`.
 </Exercice>
 
 <Exercice numero="10.9" titre="Casser, exprès">

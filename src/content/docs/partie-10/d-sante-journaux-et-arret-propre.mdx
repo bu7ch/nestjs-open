@@ -369,7 +369,7 @@ Ce qu'il faut en retenir :
 <Exercices partie={10} de={10} a={12}>
 
 <Exercice numero="10.10" titre="Vivant et prêt">
-Installe `@nestjs/terminus` et ajoute à ta marketplace `GET /sante/pret` (base et Redis), en gardant `GET /sante` de l'exercice 8.6, avec `SanteFilter`, `@SkipThrottle()` et l'exclusion `sante{/*reste}` du middleware. Écris `test/sante.e2e-spec.ts` : `/sante/pret` répond `200` avec `status: 'ok'`, sans en-têtes `X-RateLimit-Limit` ni `X-Request-Id` ; après `destroy()` de la `DataSource`, `503` avec `error.base.status` à `down`, et `/sante` toujours à `200`. Attention à l'enveloppe du 8.13 : la réponse `200` arrive sous `data` (`reponse.body.data.status`), pas la `503`, qui passe par le filtre. Remets `/sante/pret` dans le healthcheck de ton `compose.yaml` (exercice 10.7).
+Installe `@nestjs/terminus` et ajoute à ta marketplace `GET /sante/pret` (base et Redis), en gardant `GET /sante` de l'exercice 8.6, avec `SanteFilter`, `@SkipThrottle()` et l'exclusion `sante{/*reste}` du middleware. Écris `test/sante.e2e-spec.ts` : `/sante/pret` répond `200` avec `status: 'ok'`, sans en-têtes `X-RateLimit-Limit` ni `X-Request-Id` (lance ce test avec `THROTTLE_ACTIF=true` : limitation coupée, l'absence de l'en-tête ne prouve rien) ; après `destroy()` de la `DataSource`, `503` avec `error.base.status` à `down`, et `/sante` toujours à `200`. Attention à l'enveloppe du 8.13 : la réponse `200` arrive sous `data` (`reponse.body.data.status`), pas la `503`, qui passe par le filtre. Remets `/sante/pret` dans le healthcheck de ton `compose.yaml` (exercice 10.7).
 </Exercice>
 
 <Exercice numero="10.11" titre="Des journaux JSON">
@@ -377,7 +377,7 @@ Ajoute `creerLogger` et passe-le à `NestFactory.create`. Fais passer à ton `Re
 </Exercice>
 
 <Exercice numero="10.12" titre="Arrêter sans couper">
-Ajoute à ta marketplace `GET /api/demo/longue` : attend 5 secondes, puis compte les produits en base et renvoie `{ termine: true, produits: N }` (sans l'interceptor de délai de l'exercice 8.12). Avec Compose, lance-la puis, une seconde plus tard, `docker compose stop api` : la requête doit recevoir `200` et le journal contenir ton message `BeforeApplicationShutdown`. Recommence sans `enableShutdownHooks()` (curl doit afficher `Empty reply from server`), puis avec `docker compose stop -t 2 api` (relève le code de sortie avec `docker inspect --format '{{.State.ExitCode}}'`). Remets tout, et ajoute `stop_grace_period: 30s` au service `api`.
+Ajoute à ta marketplace `GET /api/demo/longue` : attend 5 secondes, puis compte les produits en base et renvoie `{ termine: true, produits: N }` (sans l'interceptor de délai de l'exercice 8.12). Avec Compose, lance-la puis, une seconde plus tard, `docker compose stop api` : la requête doit recevoir `200` et le journal contenir ton message `BeforeApplicationShutdown`. Recommence sans `enableShutdownHooks()` : relève la durée de l'arrêt et le code de sortie (`docker inspect --format '{{.State.ExitCode}}'`). Recommence enfin avec `docker compose stop -t 2 api` : cette fois la requête est coupée, et curl doit afficher `Empty reply from server`. Remets tout, et ajoute `stop_grace_period: 30s` au service `api`.
 </Exercice>
 
 </Exercices>

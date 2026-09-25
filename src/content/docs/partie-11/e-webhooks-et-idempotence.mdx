@@ -254,7 +254,7 @@ Ajoute `POST /api/webhooks/paiements` à ta marketplace : route publique, `rawBo
 </Exercice>
 
 <Exercice numero="11.14" titre="Livré deux fois, payé une fois">
-Livre deux fois le même événement `paiement.reussi`, sans dédoublonnage : note le statut de la seconde réponse, et explique ce que ferait le prestataire en la recevant (indice : `transitionner` refuse `payee → payee`). Ajoute la table `evenements_recus` et la transaction de la section : la seconde livraison répond `200` avec `{ "doublon": true }`. Teste aussi trois livraisons **simultanées** avec `Promise.all` : trois `200`, un seul `doublon: false`, une seule ligne dans `evenements_recus`.
+Livre deux fois le même événement `paiement.reussi`, sans dédoublonnage : note le statut de la seconde réponse, et explique ce que ferait le prestataire en la recevant (indice : `transitionner` refuse `payee → payee`). Ajoute la table `evenements_recus` et la transaction de la section : la seconde livraison répond `200` avec `{ "doublon": true }` (pour que le paiement soit écrit dans **la même transaction**, `marquerPayee` doit accepter le gestionnaire de la transaction en paramètre). Teste aussi trois livraisons **simultanées** avec `Promise.all` : trois `200`, un seul `doublon: false`, une seule ligne dans `evenements_recus`.
 </Exercice>
 
 <Exercice numero="11.15" titre="Panne, et événement inattendu">

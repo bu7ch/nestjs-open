@@ -155,7 +155,7 @@ async canActivate(contexte: ExecutionContext): Promise<boolean> {
 }
 ```
 
-`getType()` vaut `'http'` pour une requête et `'ws'` pour un événement de gateway. Jusqu'à la section b, n'importe qui peut donc se connecter au chat : ne déploie pas cette étape telle quelle.
+`getType()` vaut `'http'` pour une requête et `'ws'` pour un événement de gateway. Jusqu'à la section b, n'importe qui peut donc se connecter au chat : ne déploie pas cette étape telle quelle. Attention aussi aux autres contextes : `getType() !== 'http'` laisse passer sans jeton les requêtes GraphQL du bonus de la partie 5 (leur contexte vaut `'graphql'`). Si tu as fait ce bonus, réserve l'exemption aux sockets avec `getType() === 'ws'`.
 
 ## Valider, et répondre aux erreurs
 
