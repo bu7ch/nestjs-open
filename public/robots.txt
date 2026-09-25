@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://bu7ch.github.io/nestjs-open/sitemap-index.xml

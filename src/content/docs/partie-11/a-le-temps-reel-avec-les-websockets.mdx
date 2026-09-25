@@ -1,0 +1,338 @@
+---
+title: "a · Le temps réel avec les WebSockets"
+description: "Un gateway socket.io, des salles par village, des événements typés, et des erreurs qui arrivent jusqu'au client."
+projet: loup-garou
+duree: 75
+prerequis: Partie 8 (guards, filtres d'exceptions) ; partie 6 (tests de bout en bout).
+exercices: 3
+sidebar:
+  order: 1
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+En HTTP, c'est toujours le client qui parle en premier : il envoie une requête, le serveur répond, et la conversation s'arrête. Pour un chat, c'est un problème. Quand Alice écrit « Qui a hurlé cette nuit ? », le serveur doit l'**apporter** aux autres joueurs, qui n'ont rien demandé. On pourrait leur faire demander « du nouveau ? » toutes les secondes, mais ce serait lent et coûteux.
+
+Un **WebSocket** règle la question : une connexion qui **reste ouverte**, dans laquelle le client et le serveur peuvent parler chacun quand ils veulent. On l'utilise à travers **socket.io**, une bibliothèque qui ajoute ce dont un jeu a besoin : des messages nommés (des **événements**), des **salles** pour parler à un groupe, des accusés de réception, et une reconnexion automatique. Le client et le serveur doivent tous les deux utiliser socket.io.
+
+## Installer
+
+```bash
+npm install @nestjs/websockets @nestjs/platform-socket.io
+npm install -D socket.io-client
+```
+
+Le premier paquet apporte les décorateurs, le second fait le lien avec socket.io. `socket.io-client` ne sert qu'aux tests : ce sera ton faux joueur. Oublie `@nestjs/platform-socket.io` et l'application s'arrête au démarrage :
+
+```text
+ERROR [PackageLoader] No driver (WebSockets) has been selected. In order to use the default driver, please, install the "@nestjs/platform-socket.io" package ($ npm install @nestjs/platform-socket.io).
+```
+
+## Des événements typés
+
+Avec socket.io, un événement est un nom (`'chat:envoyer'`) et une donnée. Rien n'empêche le client d'envoyer `'chat:envoyé'` au lieu de `'chat:envoyer'`, et rien ne le préviendra : on l'a essayé, le serveur ignore l'événement sans rien journaliser, et le client attend une réponse qui ne vient jamais. On décrit donc les événements dans deux interfaces, que le serveur **et** les tests utiliseront :
+
+```ts title="src/jeu/evenements.ts"
+import type { Phase } from '../villages/village.entity.js';
+
+export interface MessageDeChat {
+	auteur: string;
+	texte: string;
+}
+
+export type Reponse<T> = { ok: true; donnees: T } | { ok: false; erreur: string | string[] };
+
+export interface ClientVersServeur {
+	'village:rejoindre': (demande: { villageId: number }, ack: (reponse: Reponse<{ phase: Phase }>) => void) => void;
+	'chat:envoyer': (demande: { villageId: number; texte: string }, ack: (reponse: Reponse<MessageDeChat>) => void) => void;
+}
+
+export interface ServeurVersClient {
+	'chat:message': (message: MessageDeChat) => void;
+	'phase:changee': (evenement: { villageId: number; phase: Phase }) => void;
+}
+```
+
+- `ClientVersServeur` liste ce que le client peut envoyer. Chaque événement reçoit la donnée, puis un **accusé de réception** (`ack`, pour *acknowledgement*) : une fonction que le serveur appelle pour répondre à **cet** envoi-là. C'est l'équivalent de la réponse HTTP.
+- `ServeurVersClient` liste ce que le serveur peut pousser, sans qu'on le lui demande.
+- `Reponse<T>` fixe la forme de tous les accusés : `{ ok: true, donnees }` ou `{ ok: false, erreur }`. Le client n'a jamais à deviner.
+
+Les deux-points dans les noms (`chat:envoyer`) ne sont qu'une convention de lecture : socket.io n'y voit qu'un texte.
+
+## Le gateway
+
+Un **gateway** est à socket.io ce qu'un contrôleur est à HTTP : une classe dont les méthodes répondent à des événements.
+
+```ts title="src/jeu/jeu.gateway.ts" {10,12,15,16,20,24,25,35}
+import { ForbiddenException, NotFoundException, UseFilters } from '@nestjs/common';
+import { ConnectedSocket, MessageBody, SubscribeMessage, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
+import type { Server, Socket } from 'socket.io';
+import { VillagesService } from '../villages/villages.service.js';
+import { EnvoyerMessageDto } from './dto/envoyer-message.dto.js';
+import { RejoindreDto } from './dto/rejoindre.dto.js';
+import { ErreursWsFilter } from './erreurs-ws.filter.js';
+import type { ClientVersServeur, ServeurVersClient } from './evenements.js';
+
+export const salleDuVillage = (villageId: number) => `village:${villageId}`;
+
+@WebSocketGateway({ cors: { origin: ['http://localhost:5173'] } })
+@UseFilters(ErreursWsFilter)
+export class JeuGateway {
+	@WebSocketServer()
+	serveur: Server<ClientVersServeur, ServeurVersClient>;
+
+	constructor(private readonly villages: VillagesService) {}
+
+	@SubscribeMessage('village:rejoindre')
+	async rejoindre(@ConnectedSocket() client: Socket, @MessageBody() { villageId }: RejoindreDto) {
+		const village = await this.villages.trouverSansParticipants(villageId);
+		if (!village) throw new NotFoundException(`Village ${villageId} introuvable`);
+		await client.join(salleDuVillage(villageId));
+		return { ok: true, donnees: { phase: village.phase } };
+	}
+
+	@SubscribeMessage('chat:envoyer')
+	async envoyer(@ConnectedSocket() client: Socket, @MessageBody() { villageId, texte }: EnvoyerMessageDto) {
+		const village = await this.villages.trouverSansParticipants(villageId);
+		if (!village) throw new NotFoundException(`Village ${villageId} introuvable`);
+		if (village.phase !== 'jour') throw new ForbiddenException('Le village dort : c\'est la nuit');
+
+		const message = { auteur: client.id, texte };
+		this.serveur.to(salleDuVillage(villageId)).emit('chat:message', message);
+		return { ok: true, donnees: message };
+	}
+}
+```
+
+- Ligne 12 : `@WebSocketGateway()` fait de la classe un gateway. Sans numéro de port, il s'installe **sur le même serveur** que ton API HTTP, au chemin `/socket.io`. L'option `cors` et la ligne 13 sont expliquées plus bas.
+- Lignes 15 et 16 : `@WebSocketServer()` range dans `serveur` le serveur socket.io, celui qui sait parler à tous les clients. Ses deux paramètres de type branchent les interfaces : `serveur.emit('chat:mesage', …)`, avec une faute de frappe, ne compile plus.
+- Ligne 20 : `@SubscribeMessage('village:rejoindre')` fait appeler cette méthode quand un client envoie cet événement. `@ConnectedSocket()` donne le socket de ce client, c'est-à-dire sa connexion, et `@MessageBody()` la donnée reçue.
+- Ligne 24 : une **salle** (*room*) est un groupe de sockets, désigné par un simple nom. `client.join(…)` y fait entrer ce client. Un socket peut être dans plusieurs salles, et une salle n'a pas besoin d'être créée : elle existe dès qu'un socket y entre.
+- Ligne 25 : ce que la méthode **renvoie** devient l'accusé de réception. Le client reçoit `{ ok: true, donnees: { phase: 'jour' } }`.
+- Ligne 35 : `serveur.to(salle).emit(…)` pousse le message à **tous** les sockets de la salle, l'auteur compris. Les joueurs des autres villages ne reçoivent rien.
+
+La ligne 10 fabrique les noms de salles à un seul endroit : `village:12` écrit à la main dans deux fichiers, puis `villages:12` dans un troisième, et un joueur ne reçoit plus rien, sans aucune erreur.
+
+Pour l'instant, le message porte `client.id` comme auteur : un identifiant technique de la connexion, du genre `XTw-LH7iCHj41ZIWAAAA`. On ne sait pas encore **qui** est derrière un socket. C'est l'objet de la section b.
+
+Le gateway se déclare comme un provider, dans un module qui importe `VillagesModule` (qui doit exporter `VillagesService`), et ce module s'ajoute aux `imports` d'`AppModule` :
+
+```ts title="src/jeu/jeu.module.ts"
+@Module({
+	imports: [VillagesModule],
+	providers: [JeuGateway],
+})
+export class JeuModule {}
+```
+
+Au démarrage, NestJS annonce les événements qu'il écoute :
+
+```text
+LOG [WebSocketsController] JeuGateway subscribed to the "village:rejoindre" message
+LOG [WebSocketsController] JeuGateway subscribed to the "chat:envoyer" message
+```
+
+## Ton guard global s'invite
+
+Premier essai avec un client : aucun accusé ne revient, et le serveur affiche :
+
+```text
+ERROR [WsExceptionsHandler] TypeError: Cannot read properties of undefined (reading 'authorization')
+    at AuthGuard.canActivate (src/auth/auth.guard.ts:19:41)
+```
+
+Le guard déclaré avec `APP_GUARD` en partie 7 s'applique à **tout**, gateways compris. Il appelle `switchToHttp().getRequest()`, qui, pour un événement socket.io, renvoie le socket et non une requête HTTP. Un socket n'a pas de `headers`, d'où l'erreur.
+
+On apprend donc au guard à ne s'occuper que du HTTP. Les sockets seront authentifiés autrement, une fois pour toutes à la connexion (section b) :
+
+```ts title="src/auth/auth.guard.ts" {2}
+async canActivate(contexte: ExecutionContext): Promise<boolean> {
+	if (contexte.getType() !== 'http') return true;
+
+	const estPublic = this.reflector.getAllAndOverride<boolean>(EST_PUBLIC, [contexte.getHandler(), contexte.getClass()]);
+	// … la suite ne change pas
+}
+```
+
+`getType()` vaut `'http'` pour une requête et `'ws'` pour un événement de gateway. Jusqu'à la section b, n'importe qui peut donc se connecter au chat : ne déploie pas cette étape telle quelle.
+
+## Valider, et répondre aux erreurs
+
+Les données d'un événement viennent du client : on les valide comme un corps de requête, avec des DTO.
+
+```ts title="src/jeu/dto/rejoindre.dto.ts"
+export class RejoindreDto {
+	@IsInt()
+	villageId: number;
+}
+```
+
+```ts title="src/jeu/dto/envoyer-message.dto.ts"
+export class EnvoyerMessageDto {
+	@IsInt()
+	villageId: number;
+
+	@IsString()
+	@Length(1, 500)
+	texte: string;
+}
+```
+
+Bonne nouvelle, on l'a vérifié : le `ValidationPipe` global déclaré dans `configurerApp` (partie 6) **s'applique aussi** aux gateways. Sans DTO, un client qui envoie le texte `"n'importe quoi"` à la place d'un objet faisait planter TypeORM (`Undefined value encountered in property 'Village.id' of a where condition`) ; avec le DTO, la donnée est refusée avant.
+
+Mauvaise nouvelle : le client n'en sait rien. Sans rien de plus, voici ce qu'il reçoit quand une méthode lève une exception, qu'elle vienne du pipe ou de ton code :
+
+| Exception levée | Événement `exception` reçu par le client | Accusé de réception |
+|---|---|---|
+| `WsException('Refusé')` | `{ status: 'error', message: 'Refusé', cause: … }` | jamais appelé |
+| `ForbiddenException`, `BadRequestException`… | `{ status: 'error', message: 'Internal server error', cause: … }` | jamais appelé |
+
+Un client qui attend l'accusé attend donc pour rien, jusqu'à son propre délai (`operation has timed out`). Et ton filtre global `ToutesExceptionsFilter` de la partie 8 n'y peut rien : on a vérifié qu'il n'est **pas** appelé pour un gateway, c'est le gestionnaire par défaut de NestJS, `WsExceptionsHandler`, qui répond.
+
+On écrit donc un filtre pour les gateways, qui répond **dans l'accusé** :
+
+```ts title="src/jeu/erreurs-ws.filter.ts" {10,11,12,15,16,19,20}
+import { ArgumentsHost, Catch, ExceptionFilter, HttpException, Logger } from '@nestjs/common';
+import { WsException } from '@nestjs/websockets';
+
+@Catch()
+export class ErreursWsFilter implements ExceptionFilter {
+	private readonly logger = new Logger('ErreursWs');
+
+	catch(exception: unknown, hote: ArgumentsHost) {
+		let erreur: string | string[] = 'Erreur interne du serveur';
+		if (exception instanceof HttpException) {
+			const corps = exception.getResponse();
+			erreur = typeof corps === 'string' ? corps : ((corps as { message?: string | string[] }).message ?? exception.message);
+		} else if (exception instanceof WsException) {
+			erreur = String(exception.getError());
+		} else {
+			this.logger.error(exception instanceof Error ? exception.stack : String(exception));
+		}
+
+		const ack = hote.getArgByIndex(2);
+		if (typeof ack === 'function') ack({ ok: false, erreur });
+	}
+}
+```
+
+- Lignes 10 à 12 : une `HttpException` garde son message, comme dans `ToutesExceptionsFilter`. On peut donc lever les mêmes `NotFoundException` et `ForbiddenException` qu'en HTTP, et les messages de validation restent un tableau.
+- Lignes 15 et 16 : une erreur inattendue est journalisée, et le client ne reçoit qu'un message générique : même règle qu'en partie 8.
+- Lignes 19 et 20 : pour un gateway, les arguments sont, dans l'ordre, le socket, la donnée, **l'accusé de réception** (s'il y en a un) et le nom de l'événement. Le filtre appelle l'accusé avec une `Reponse` en erreur. Un client qui n'a pas demandé d'accusé ne reçoit rien : il n'attendait rien.
+
+Il s'applique au gateway avec `@UseFilters(ErreursWsFilter)` (ligne 13 du gateway). Résultat :
+
+```text
+village:rejoindre { villageId: 99 }     → { ok: false, erreur: 'Village 99 introuvable' }
+village:rejoindre { villageId: 'abc' }  → { ok: false, erreur: ['villageId must be an integer number'] }
+chat:envoyer (la nuit)                  → { ok: false, erreur: "Le village dort : c'est la nuit" }
+```
+
+## Depuis un navigateur : CORS
+
+Le front du jeu tourne sur `http://localhost:5173` et le serveur ailleurs : c'est la situation « CORS » de la partie 7 (section f). Le `app.enableCors(…)` de `configurerApp` ne concerne que les routes HTTP de NestJS : on a vérifié que les réponses de `/socket.io` n'en reçoivent aucun en-tête. Un navigateur ouvert sur une autre origine affiche alors, dans sa console :
+
+```text
+Access to XMLHttpRequest at 'http://localhost:3977/socket.io/?EIO=4&transport=polling&t=…' from origin 'http://localhost:5180' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+```
+
+et le client socket.io reçoit un `connect_error` au message peu parlant : `xhr poll error`. L'origine autorisée se déclare donc **dans le gateway**, avec l'option `cors` (ligne 12). La page servie depuis `http://localhost:5173`, elle, passe.
+
+Deux précisions. Les tests, qui utilisent `socket.io-client` depuis Node, ne sont **jamais** bloqués : CORS est une règle des navigateurs. Et CORS ne protège pas ton serveur : on y revient dans la section b.
+
+## Tester avec de vrais clients
+
+Les tests démarrent l'application sur un vrai port (`app.listen(0)` laisse le système en choisir un libre) et s'y connectent avec `socket.io-client`, comme le ferait le front :
+
+```ts title="test/aide.ts" {8,14,19,26}
+import { Test } from '@nestjs/testing';
+import { io, type Socket } from 'socket.io-client';
+import { DataSource } from 'typeorm';
+import { AppModule } from '../src/app.module.js';
+import { configurerApp } from '../src/configurer-app.js';
+import type { ClientVersServeur, ServeurVersClient } from '../src/jeu/evenements.js';
+
+export type ClientDeJeu = Socket<ServeurVersClient, ClientVersServeur>;
+
+export async function demarrer() {
+	const module = await Test.createTestingModule({ imports: [AppModule] }).compile();
+	const app = module.createNestApplication();
+	configurerApp(app);
+	await app.listen(0);
+	return { app, url: await app.getUrl(), dataSource: app.get(DataSource) };
+}
+
+export function connecter(url: string): Promise<ClientDeJeu> {
+	const client: ClientDeJeu = io(url, { transports: ['websocket'], reconnection: false });
+	return new Promise((resolve, reject) => {
+		client.once('connect', () => resolve(client));
+		client.once('connect_error', reject);
+	});
+}
+
+export function attendre<E extends keyof ServeurVersClient>(client: ClientDeJeu, evenement: E): Promise<Parameters<ServeurVersClient[E]>[0]> {
+	return new Promise((resolve, reject) => {
+		const minuteur = setTimeout(() => reject(new Error(`${evenement} jamais reçu`)), 3000);
+		client.once(evenement, ((valeur: never) => {
+			clearTimeout(minuteur);
+			resolve(valeur);
+		}) as never);
+	});
+}
+```
+
+- Ligne 8 : côté client, les deux interfaces sont **inversées** : ce que le serveur envoie, le client l'écoute.
+- Ligne 14 : `app.listen(0)` au lieu de `app.init()`. Supertest n'avait pas besoin d'un port, un client socket.io si.
+- Ligne 19 : `transports: ['websocket']` évite le détour par des requêtes HTTP classiques, que socket.io utilise d'abord par défaut ; `reconnection: false` empêche un test de se reconnecter tout seul dans notre dos.
+- Ligne 26 : `attendre` transforme « le prochain événement de ce nom » en promesse, avec un délai de 3 secondes. Sans lui, un événement qui n'arrive jamais bloquerait le test jusqu'à la limite de Vitest, avec un message qui ne dit rien de l'événement manquant.
+
+Un client envoie avec `emitWithAck`, qui renvoie une promesse de l'accusé de réception :
+
+```ts title="test/chat.e2e-spec.ts"
+it('le jour, un message arrive aux membres du village, et à eux seuls', async () => {
+	const village = await creerVillage('jour');
+	const autre = await creerVillage('jour');
+	const [alice, bob, clara] = [await ouvrir(), await ouvrir(), await ouvrir()];
+	await alice.emitWithAck('village:rejoindre', { villageId: village });
+	await bob.emitWithAck('village:rejoindre', { villageId: village });
+	await clara.emitWithAck('village:rejoindre', { villageId: autre });
+	const recusParClara: unknown[] = [];
+	clara.on('chat:message', (message) => recusParClara.push(message));
+
+	const recu = attendre(bob, 'chat:message');
+	const ack = await alice.emitWithAck('chat:envoyer', { villageId: village, texte: 'Bonjour' });
+	expect(ack).toEqual({ ok: true, donnees: { auteur: alice.id, texte: 'Bonjour' } });
+	expect(await recu).toEqual({ auteur: alice.id, texte: 'Bonjour' });
+
+	await clara.emitWithAck('village:rejoindre', { villageId: autre });
+	expect(recusParClara).toEqual([]);
+});
+
+it('la nuit, le village dort', async () => {
+	const village = await creerVillage('nuit');
+	const alice = await ouvrir();
+	await alice.emitWithAck('village:rejoindre', { villageId: village });
+	expect(await alice.emitWithAck('chat:envoyer', { villageId: village, texte: 'Psst' })).toEqual({ ok: false, erreur: 'Le village dort : c\'est la nuit' });
+});
+```
+
+`ouvrir()` appelle `connecter(url)` et garde le client dans une liste que l'`afterEach` referme ; `creerVillage` insère un village par SQL, comme les tests de la partie 8.
+
+Tester qu'un message **n'arrive pas** est le piège du temps réel. Attendre une seconde « pour voir » rend le test lent, et faux sur une machine chargée. L'astuce est la dernière ligne avant l'assertion : Clara fait un aller-retour avec le serveur. socket.io garantit que les messages d'une même connexion arrivent **dans l'ordre** où le serveur les envoie ; le message d'Alice est parti avant la réponse à Clara, donc si Clara avait dû le recevoir, il serait déjà là. Le test ne dépend d'aucun délai. Tous les tests temps réel de cette partie sont écrits ainsi, et on les a lancés dix fois de suite sans un seul échec.
+
+<Exercices partie={11} de={1} a={3}>
+
+<Exercice numero="11.1" titre="Le vendeur voit arriver ses commandes">
+Installe les paquets et crée un `CommandesGateway` pour ta marketplace. Un client envoie `vendeur:suivre` avec `{ "vendeurId": 3 }` : le gateway le fait entrer dans la salle `vendeur:3` et répond `{ ok: true, donnees: null }`. Quand `POST /api/commandes` crée une commande, le serveur émet `commande:creee` avec `{ commandeId, lignes: [{ produit, quantite }] }` dans la salle de **chaque** vendeur concerné par une ligne. Décris les événements dans des interfaces typées. Écris le test de bout en bout avec deux clients `socket.io-client` qui suivent deux vendeurs différents : une commande qui ne contient que des produits du vendeur 1 arrive au premier client, et pas au second (vérifie-le par un aller-retour, sans délai).
+</Exercice>
+
+<Exercice numero="11.2" titre="Des erreurs qui reviennent au client">
+Ajoute un DTO à `vendeur:suivre`. Sans filtre, envoie `{ "vendeurId": "abc" }` avec `emitWithAck` et un délai (`client.timeout(1000).emitWithAck(…)`) : note l'erreur que reçoit le test et le contenu de l'événement `exception`. Écris ensuite `ErreursWsFilter`, applique-le au gateway, et teste que la même demande renvoie `{ ok: false, erreur: ["vendeurId must be an integer number"] }`, et qu'un vendeur inconnu renvoie `{ ok: false, erreur: "Vendeur 99 introuvable" }`.
+</Exercice>
+
+<Exercice numero="11.3" titre="Le guard global, et CORS">
+Retire la ligne `getType() !== 'http'` de ton `AuthGuard` et relance le test de 11.1 : note le message exact du journal et l'événement reçu par le client. Remets la ligne. Puis ajoute l'option `cors` au gateway avec l'origine de ton front, et écris un test qui appelle `GET /socket.io/?EIO=4&transport=polling` avec `fetch` : avec l'en-tête `Origin` de ton front, la réponse contient `Access-Control-Allow-Origin` ; avec `Origin: http://mechant.example`, elle ne le contient pas. Vérifie enfin que retirer `cors` du gateway, en gardant `app.enableCors(…)`, fait échouer le premier cas.
+</Exercice>
+
+</Exercices>

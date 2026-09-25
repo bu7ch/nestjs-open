@@ -1,0 +1,232 @@
+---
+title: "d · Les files de tâches"
+description: "Sortir un travail lent ou fragile de la requête : producteur et consommateur, réessais avec un délai croissant, échec définitif, et un seul job par demande."
+projet: loup-garou
+duree: 60
+prerequis: Section c (BullMQ et Redis).
+exercices: 3
+bonus: true
+sidebar:
+  order: 4
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Dans la section c, la file servait de **minuteur**. Son usage le plus courant est un autre : sortir de la requête un travail **lent** ou **fragile**. Quand une partie se termine, chaque joueur reçoit un e-mail de récapitulatif. L'envoi passe par un prestataire de messagerie, qui met parfois plusieurs secondes à répondre, et qui tombe parfois en panne. Si la route qui termine la partie attendait ces envois, le dernier joueur verrait sa page tourner, et une panne de messagerie ferait échouer la fin de partie elle-même.
+
+Avec une file, la route **dépose** une demande et répond aussitôt. Un worker, à côté, fait le travail, et **réessaie** en cas d'échec. Ce découpage a un nom : le **producteur** dépose, le **consommateur** traite. Les deux ne se connaissent pas : ils ne partagent que la file.
+
+## Réessayer, mais pas trop vite
+
+```ts title="src/recapitulatifs/recapitulatifs.service.ts" {18,19,20,21,22}
+import { InjectQueue } from '@nestjs/bullmq';
+import { Injectable } from '@nestjs/common';
+import type { Queue } from 'bullmq';
+
+export interface DemandeDeRecapitulatif {
+	villageId: number;
+}
+
+@Injectable()
+export class RecapitulatifsService {
+	constructor(@InjectQueue('recapitulatifs') private readonly file: Queue<DemandeDeRecapitulatif>) {}
+
+	demander(villageId: number) {
+		return this.file.add(
+			'recapitulatif',
+			{ villageId },
+			{
+				jobId: `recap-${villageId}`,
+				attempts: 4,
+				backoff: { type: 'exponential', delay: 100 },
+				removeOnComplete: { age: 7 * 24 * 3600 },
+				removeOnFail: { age: 30 * 24 * 3600 },
+			},
+		);
+	}
+}
+```
+
+- Ligne 19 : `attempts: 4`, le job a droit à quatre tentatives en tout. Par défaut, une seule : le premier échec est définitif.
+- Ligne 20 : le **backoff** est l'attente entre deux tentatives. `exponential` la double à chaque fois : 100 ms, puis 200, puis 400. Réessayer aussitôt une messagerie en panne ne sert à rien, et l'inonder de demandes n'aide pas à la relever. On a mesuré les écarts entre tentatives : 113 puis 215 ms lors d'un essai, 174 puis 300 ms lors d'un autre. C'est un **minimum**, jamais une heure exacte. En production, on prendra plutôt quelques secondes que 100 ms.
+- Ligne 18 : l'identifiant du job dit « le récapitulatif de ce village ». On y revient plus bas.
+- Lignes 21 et 22 : on **garde** les jobs terminés une semaine, et ceux qui ont échoué un mois, au lieu de les supprimer aussitôt comme dans la section c. Tu vas voir pourquoi.
+
+## Le consommateur, et l'échec définitif
+
+```ts title="src/recapitulatifs/recapitulatifs.processor.ts" {21,24,25,30,32}
+import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
+import { Logger } from '@nestjs/common';
+import { UnrecoverableError, type Job } from 'bullmq';
+import { VillagesService } from '../villages/villages.service.js';
+import { MessagerieService } from './messagerie.service.js';
+import type { DemandeDeRecapitulatif } from './recapitulatifs.service.js';
+
+@Processor('recapitulatifs')
+export class RecapitulatifsProcessor extends WorkerHost {
+	private readonly logger = new Logger('Recapitulatifs');
+
+	constructor(
+		private readonly villages: VillagesService,
+		private readonly messagerie: MessagerieService,
+	) {
+		super();
+	}
+
+	async process(job: Job<DemandeDeRecapitulatif>) {
+		const village = await this.villages.trouverSansParticipants(job.data.villageId);
+		if (!village) throw new UnrecoverableError(`Village ${job.data.villageId} introuvable`);
+
+		const participants = await this.villages.participantsDe(village.id);
+		for (const { utilisateur } of participants) {
+			await this.messagerie.envoyer(utilisateur.pseudo, `La partie « ${village.nom} » est terminée`);
+		}
+		return participants.length;
+	}
+
+	@OnWorkerEvent('failed')
+	surEchec(job: Job<DemandeDeRecapitulatif>, erreur: Error) {
+		if (job.attemptsMade < (job.opts.attempts ?? 1) && !(erreur instanceof UnrecoverableError)) return;
+		this.logger.error(`Récapitulatif du village ${job.data.villageId} abandonné après ${job.attemptsMade} tentative(s) : ${erreur.message}`);
+	}
+}
+```
+
+`MessagerieService` représente le prestataire : sa méthode `envoyer(destinataire, sujet)` lève une erreur quand il est en panne.
+
+- Ligne 25 : une erreur levée pendant `process` fait **échouer la tentative**. BullMQ programme alors la suivante, après le backoff.
+- Ligne 21 : certaines erreurs ne se corrigeront pas en attendant : un village qui n'existe pas n'existera pas plus dans 400 ms. `UnrecoverableError`, fournie par BullMQ, dit « inutile de réessayer ». On l'a vérifié : ce job échoue après **une** tentative, malgré les quatre permises.
+- Lignes 30 et 32 : `@OnWorkerEvent('failed')` fait appeler la méthode quand un job échoue. Attention, on a compté : avec quatre tentatives ratées, l'événement se déclenche **quatre fois**, une par tentative. La ligne 32 ne garde que l'échec **définitif** : plus de tentative permise, ou une erreur irrécupérable. C'est lui qui mérite une trace dans le journal :
+
+```text
+ERROR [Recapitulatifs] Récapitulatif du village 1 abandonné après 4 tentative(s) : Messagerie indisponible
+ERROR [Recapitulatifs] Récapitulatif du village 999 abandonné après 1 tentative(s) : Village 999 introuvable
+```
+
+Un job qui a épuisé ses tentatives n'est pas perdu : il reste dans Redis à l'état `failed`, avec la raison (`job.failedReason`) et le nombre de tentatives (`job.attemptsMade`), pendant le mois fixé par `removeOnFail`. On peut l'examiner, et le relancer une fois la panne réparée, avec `job.retry()` : on l'a fait, il repasse dans la file et se termine normalement.
+
+## Chaque tentative recommence tout
+
+Voici l'observation la plus importante de cette section. On a fait échouer la messagerie deux fois, **seulement pour Bob**, le second destinataire. Le job a réussi à la troisième tentative. Et Alice a reçu son e-mail **trois fois** :
+
+```ts
+expect(envois.map((e) => e.destinataire)).toEqual(['Alice', 'Alice', 'Alice', 'Bob']);
+```
+
+Une nouvelle tentative relance `process` **depuis le début**. BullMQ ne sait pas ce que ton code avait déjà fait avant l'erreur. Un job qui réessaie doit donc être **idempotent** : le rejouer une fois de plus ne doit rien changer. Ici, deux façons d'y arriver : un job **par destinataire** (`recap-12-alice`, `recap-12-bob`), qui échoue et réessaie seul ; ou noter en base les e-mails déjà partis, et les sauter. Les deux se valent ; ce qui ne va pas, c'est de l'ignorer.
+
+## Une seule demande, même demandée deux fois
+
+La fin de partie peut être déclenchée deux fois : deux joueurs qui cliquent en même temps, une requête rejouée par le navigateur. Sans précaution, deux jobs, et deux e-mails par joueur. C'est le rôle du `jobId` (ligne 18 du service) : on a vérifié qu'un second `demander(12)` renvoie **le même job** (même `id`), sans en créer un autre.
+
+Mais cette protection ne dure que tant que le job existe dans Redis. Dans la section c, `removeOnComplete: true` supprimait le job dès la fin : un même identifiant pouvait alors resservir, et c'est ce qu'on voulait, pour enchaîner les phases. Ici, c'est l'inverse : on garde le job terminé une semaine (`removeOnComplete: { age: … }`, en secondes), et une nouvelle demande, **après** l'envoi, est encore ignorée. Le test le vérifie :
+
+```ts title="test/recapitulatifs.e2e-spec.ts"
+it('un même jobId ne crée qu\'un job, même demandé deux fois', async () => {
+	const village = await villageFini();
+	const fin = issue(`recap-${village}`);
+	const premier = await app.get(RecapitulatifsService).demander(village);
+	const second = await app.get(RecapitulatifsService).demander(village);
+	expect(second.id).toBe(premier.id);
+	await fin;
+	await app.get(RecapitulatifsService).demander(village); // déjà terminé, et gardé : ignoré aussi
+	expect(await file.getJobCounts('completed', 'waiting', 'delayed', 'active')).toEqual({ completed: 1, waiting: 0, delayed: 0, active: 0 });
+	expect(envois).toHaveLength(2);
+});
+```
+
+Choisir `removeOnComplete`, c'est donc choisir **pendant combien de temps** un doublon est refusé.
+
+## Tester avec une fausse messagerie
+
+On remplace le prestataire par une doublure (partie 6), avec `overrideProvider`. `demarrer` accepte pour ça une fonction qui modifie le module de test avant sa compilation :
+
+```ts title="test/aide.ts"
+export async function demarrer(surcharger: (constructeur: TestingModuleBuilder) => TestingModuleBuilder = (c) => c) {
+	const module = await surcharger(Test.createTestingModule({ imports: [AppModule] })).compile();
+	// … la suite ne change pas
+}
+```
+
+```ts title="test/recapitulatifs.e2e-spec.ts"
+const envois: { destinataire: string; a: number }[] = [];
+let pannes: (destinataire: string) => boolean = () => false;
+const fausseMessagerie = {
+	envoyer: async (destinataire: string) => {
+		if (pannes(destinataire)) throw new Error('Messagerie indisponible');
+		envois.push({ destinataire, a: Date.now() });
+	},
+};
+
+beforeAll(async () => {
+	({ app, dataSource } = await demarrer((c) => c.overrideProvider(MessagerieService).useValue(fausseMessagerie)));
+	file = app.get<Queue>(getQueueToken('recapitulatifs'));
+	o = outils(app, dataSource);
+});
+```
+
+`pannes` décide, test par test, quand la messagerie échoue, et `envois` garde la trace de ce qui est parti. Pour attendre la fin d'un job **qui peut échouer**, `completed` ne suffit plus : on écoute aussi `failed`, en ne retenant que l'échec définitif. Un job terminé en échec a une date de fin, `finishedOn` ; une tentative ratée suivie d'une autre n'en a pas encore.
+
+```ts title="test/recapitulatifs.e2e-spec.ts"
+/** Attend que le worker ait fini ce job, en succès ou en échec définitif. */
+const issue = (jobId: string) =>
+	new Promise<{ etat: 'termine' | 'echoue'; job: Job }>((resolve) => {
+		const worker = app.get(RecapitulatifsProcessor).worker;
+		const surFin = (job: Job) => {
+			if (job.id !== jobId) return;
+			arreter();
+			resolve({ etat: 'termine', job });
+		};
+		const surEchec = (job: Job | undefined) => {
+			if (!job || job.id !== jobId || (job.attemptsMade < (job.opts.attempts ?? 1) && job.finishedOn === undefined)) return;
+			arreter();
+			resolve({ etat: 'echoue', job });
+		};
+		const arreter = () => {
+			worker.off('completed', surFin);
+			worker.off('failed', surEchec);
+		};
+		worker.on('completed', surFin);
+		worker.on('failed', surEchec);
+	});
+
+it('abandonne après la dernière tentative', async () => {
+	const village = await villageFini();
+	pannes = () => true;
+	const fin = issue(`recap-${village}`);
+	await app.get(RecapitulatifsService).demander(village);
+	const { etat, job } = await fin;
+	expect(etat).toBe('echoue');
+	expect(job.attemptsMade).toBe(4);
+	expect(job.failedReason).toBe('Messagerie indisponible');
+	expect(await (await file.getJob(`recap-${village}`))?.getState()).toBe('failed');
+});
+
+it('n\'insiste pas sur une erreur définitive', async () => {
+	const fin = issue('recap-999');
+	await app.get(RecapitulatifsService).demander(999);
+	const { etat, job } = await fin;
+	expect(etat).toBe('echoue');
+	expect(job.attemptsMade).toBe(1);
+	expect(job.failedReason).toBe('Village 999 introuvable');
+});
+```
+
+`villageFini()` crée un village avec deux joueurs, Alice et Bob. Le test des réessais mesure aussi les écarts entre tentatives, et vérifie qu'ils dépassent 100 puis 200 ms : jamais qu'ils valent **exactement** ces durées, ce qui échouerait sur une machine un peu chargée.
+
+<Exercices partie={11} de={10} a={12}>
+
+<Exercice numero="11.10" titre="Importer un catalogue en CSV">
+Ajoute `POST /api/vendeurs/:vendeurId/imports`, réservé au propriétaire du vendeur et aux `admin` (le guard de l'exercice 8.8), qui reçoit `{ "csv": "nom;prix;categorie\nTable;120;mobilier\n…" }`. La route dépose un job dans la file `imports` et répond `202` avec `{ "importId": "…" }` (l'identifiant du job) ; le worker crée les produits. `GET /api/imports/:importId` renvoie `{ "etat": …, "resultat": … }`, où `etat` est l'état BullMQ du job (`waiting`, `active`, `completed`, `failed`…) et `resultat`, une fois terminé, `{ "crees": 3, "erreurs": [{ "ligne": 5, "message": "prix doit être un nombre positif" }] }`. Teste avec trois lignes valides et une ligne au prix négatif : attends la fin du job, puis vérifie la réponse de `GET` et les trois produits en base.
+</Exercice>
+
+<Exercice numero="11.11" titre="Réessayer sans doublon">
+Donne aux imports `attempts: 3` et un backoff exponentiel de 200 ms. Dans un test, fais échouer une seule fois l'écriture du **troisième** produit (avec `vi.spyOn(…).mockRejectedValueOnce`, ou une doublure) : le job doit réussir à la deuxième tentative (`attemptsMade` vaut 2), et il ne doit y avoir **que** trois produits en base, pas cinq. Si ton premier essai en crée cinq, rends l'import idempotent (une transaction pour tout le fichier, ou des produits déjà présents qu'on saute). Puis envoie un CSV sans la ligne d'en-tête `nom;prix;categorie` : le job doit échouer après **une** tentative, avec `UnrecoverableError`, et `GET /api/imports/:importId` renvoyer `etat: "failed"` et la raison.
+</Exercice>
+
+<Exercice numero="11.12" titre="Un import, pas deux">
+Un vendeur qui clique deux fois ne doit pas importer deux fois. Construis le `jobId` à partir du vendeur et d'une empreinte du fichier : `import-<vendeurId>-<les 16 premiers caractères du SHA-256 du csv>` (avec `createHash('sha256')` de `node:crypto`). Teste : deux `POST` identiques renvoient le même `importId`, `getJobCounts()` ne compte qu'un job, et les produits ne sont créés qu'une fois ; le même fichier renvoyé **après** la fin de l'import est encore ignoré ; un fichier différent d'un seul caractère crée un nouvel import. Écris en une phrase quel réglage de `removeOnComplete` tu as choisi, et combien de temps un doublon est ainsi refusé.
+</Exercice>
+
+</Exercices>

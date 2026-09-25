@@ -1,0 +1,369 @@
+---
+title: "c · Les phases et les minuteurs"
+description: "Faire basculer le jour et la nuit à l'heure dite, avec des jobs différés dans Redis qui survivent à un redémarrage, et prévenir les joueurs, quel que soit le serveur."
+projet: loup-garou
+duree: 80
+prerequis: Sections a et b (le gateway, les salles).
+exercices: 3
+sidebar:
+  order: 3
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Une journée de village dure cinq minutes, une nuit deux. Au bout du compte, la phase doit changer **toute seule**, et chaque joueur doit l'apprendre dans la seconde. Le premier réflexe, c'est un `setTimeout` :
+
+```ts
+setTimeout(() => this.basculer(villageId), 5 * 60_000);
+```
+
+Il a deux défauts. Ce minuteur vit dans la **mémoire** du processus : redémarre le serveur (une mise à jour, un plantage), et tous les villages en cours restent bloqués dans leur phase, pour toujours. Et si deux instances du serveur tournent, rien ne dit laquelle est responsable de quel village.
+
+Il faut donc ranger le minuteur **hors** du processus, dans un endroit qui survit aux redémarrages et que toutes les instances partagent. C'est le rôle d'une **file de tâches** : on y dépose un **job** (« bascule le village 12 dans cinq minutes »), et un **worker** le prend quand c'est l'heure. On utilise **BullMQ**, qui range ses files dans **Redis**, une base de données en mémoire, très rapide, qui sait aussi écrire sur disque.
+
+## Redis et BullMQ
+
+Redis tourne déjà : c'est le service `redis` de ton `docker-compose.yml` (partie 10, section c), avec `REDIS_HOST` et `REDIS_PORT` dans ta configuration et dans `.env.test`. Ajoute `DUREE_JOUR_MS` et `DUREE_NUIT_MS`, la durée des phases en millisecondes, à `.env`, à `.env.test` et à ta validation d'environnement.
+
+```bash
+npm install @nestjs/bullmq bullmq
+```
+
+BullMQ parle à Redis avec `ioredis`, que tu as installé en partie 10. Depuis sa version 6, BullMQ ne l'installe plus lui-même : dans un projet qui ne l'aurait pas, l'application démarre, puis répète en boucle :
+
+```text
+Error: BullMQ could not load the optional 'ioredis' package. Install it with `npm install ioredis`, or provide a different Redis client instance (e.g. node-redis) via the connection option. In a native ESM environment, pass an already-constructed client instance instead of connection options.
+```
+
+On a même vu Vitest s'arrêter avec `JavaScript heap out of memory` dans cette situation : si un test plante de façon incompréhensible juste après l'ajout de BullMQ, vérifie d'abord ce paquet. La dernière phrase du message ne te concerne pas : avec `ioredis` installé, les options de connexion ci-dessous fonctionnent dans notre projet, qui utilise pourtant les modules ES natifs (le `"type": "module"` de son `package.json`).
+
+La connexion se déclare une fois, pour toutes les files, dans `AppModule` :
+
+```ts title="src/app.module.ts"
+BullModule.forRootAsync({
+	inject: [ConfigService],
+	useFactory: (config: ConfigService) => ({
+		connection: { host: config.get<string>('REDIS_HOST'), port: Number(config.get('REDIS_PORT')) },
+	}),
+}),
+```
+
+Si Redis ne répond pas, l'application **démarre quand même** (`Nest application successfully started`), puis son journal se remplit d'erreurs `connect ECONNREFUSED`, suivies de l'adresse de Redis, plusieurs par seconde. Rien ne l'arrête : c'est à toi de surveiller que Redis va bien, et c'est le rôle de la route de santé de la partie 10.
+
+## Programmer la fin d'une phase
+
+Le **producteur** dépose les jobs. C'est un service, qui reçoit la file par injection :
+
+```ts title="src/phases/phases.service.ts" {11,15,18}
+import { InjectQueue } from '@nestjs/bullmq';
+import { Injectable } from '@nestjs/common';
+import type { Queue } from 'bullmq';
+import type { Phase } from '../villages/village.entity.js';
+
+export interface FinDePhase {
+	villageId: number;
+	phase: Phase;
+}
+
+export const idFinDePhase = (villageId: number, phase: Phase) => `fin-${phase}-${villageId}`;
+
+@Injectable()
+export class PhasesService {
+	constructor(@InjectQueue('phases') private readonly file: Queue<FinDePhase>) {}
+
+	programmerFin(villageId: number, phase: Phase, delaiEnMs: number) {
+		return this.file.add('fin-de-phase', { villageId, phase }, { jobId: idFinDePhase(villageId, phase), delay: delaiEnMs, removeOnComplete: true, removeOnFail: true });
+	}
+}
+```
+
+- Ligne 15 : `@InjectQueue('phases')` donne la file nommée `phases`. Son type, `Queue<FinDePhase>`, décrit les données de ses jobs.
+- Ligne 18 : `add` dépose un job. `delay` le rend **différé** : il attend dans Redis, et ne sera pris qu'au bout de ce délai. Les données (`{ villageId, phase }`) sont enregistrées en JSON avec lui.
+- Ligne 11 : chaque job reçoit un **identifiant choisi**, `jobId`, au lieu d'un numéro automatique. C'est ce qui permettra de le retrouver pour l'annuler. Il a ses règles, qu'on a découvertes à nos dépens :
+
+| `jobId` | Ce que répond `add` |
+|---|---|
+| `'fin-de-phase:12'` | `Custom Id cannot contain :` |
+| `'12'` | `Custom Id cannot be integers` |
+| un identifiant déjà présent dans la file | **rien** : aucun nouveau job, et le délai reste l'ancien |
+
+La dernière ligne est la plus sournoise, car elle ne lève aucune erreur. On y revient tout de suite.
+
+La file se déclare dans le module qui l'utilise :
+
+```ts title="src/phases/phases.module.ts"
+@Module({
+	imports: [BullModule.registerQueue({ name: 'phases' }), JeuModule, VillagesModule],
+	providers: [PhasesService, PhasesProcessor],
+	exports: [PhasesService],
+})
+export class PhasesModule {}
+```
+
+`JeuModule` doit exporter `JeuGateway`, dont le worker va se servir.
+
+## Le worker
+
+Le **consommateur**, ou worker, prend les jobs quand leur heure est venue. Avec NestJS, c'est une classe marquée `@Processor`, qui hérite de `WorkerHost` et implémente `process` :
+
+```ts title="src/phases/phases.processor.ts" {8,19,22,24,25,26}
+import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { ConfigService } from '@nestjs/config';
+import type { Job } from 'bullmq';
+import { JeuGateway } from '../jeu/jeu.gateway.js';
+import { VillagesService } from '../villages/villages.service.js';
+import { PhasesService, type FinDePhase } from './phases.service.js';
+
+@Processor('phases')
+export class PhasesProcessor extends WorkerHost {
+	constructor(
+		private readonly villages: VillagesService,
+		private readonly jeu: JeuGateway,
+		private readonly phases: PhasesService,
+		private readonly config: ConfigService,
+	) {
+		super();
+	}
+
+	async process(job: Job<FinDePhase>) {
+		const { villageId, phase } = job.data;
+		const village = await this.villages.trouverSansParticipants(villageId);
+		if (!village || village.phase !== phase) return 'ignoré';
+		const suivante = phase === 'jour' ? 'nuit' : 'jour';
+		await this.villages.changerPhase(villageId, suivante);
+		this.jeu.diffuserPhase(villageId, suivante);
+		await this.phases.programmerFin(villageId, suivante, Number(this.config.get(suivante === 'jour' ? 'DUREE_JOUR_MS' : 'DUREE_NUIT_MS')));
+		return suivante;
+	}
+}
+```
+
+- Ligne 8 : `@Processor('phases')` branche la classe sur la file du même nom. Au démarrage de l'application, NestJS crée un worker qui attend les jobs de cette file.
+- Ligne 19 : `process` est appelée pour chaque job. Ce qu'elle renvoie devient le **résultat** du job (`job.returnvalue`), bien utile dans les tests.
+- Ligne 22 : le job dit « termine le **jour** du village 12 ». Si le village n'est plus dans cette phase (quelqu'un l'a fait basculer entre-temps), le job est **périmé** : il ne fait rien. Sans cette vérification, un job en retard ferait basculer la phase deux fois.
+- Lignes 24 à 26 : la bascule elle-même, en base, puis l'annonce aux joueurs de la salle du village (`diffuserPhase` fait `serveur.to(salleDuVillage(villageId)).emit('phase:changee', …)`), puis la programmation de la phase suivante. Le village tourne ainsi tout seul, de jour en nuit.
+
+`changerPhase` est un simple `update` dans `VillagesService`. Quand une partie commence, c'est le service qui la lance qui appelle `programmerFin` pour la première journée.
+
+### Pourquoi `fin-jour-12` et pas `fin-12`
+
+La première version de ce code utilisait le même identifiant pour toutes les fins de phase d'un village. Le test « la fin de la nuit est programmée » a échoué : le seul job trouvé sous cet identifiant était celui du jour, en train de se terminer, et aucune fin de nuit n'avait été ajoutée. La raison : ligne 26, le job qui termine le jour est **encore en cours** quand il programme la fin de la nuit. Son identifiant est donc déjà dans la file, et `add` n'ajoute rien (dernière ligne du tableau). D'où un identifiant par phase : `fin-jour-12`, puis `fin-nuit-12`.
+
+Et `removeOnComplete: true` (ligne 18 du service) n'est pas un détail de rangement. Sans lui, un job terminé **reste** dans Redis avec son identifiant. On l'a mesuré avec des phases de 150 ms : le village bascule deux fois (nuit, puis jour), puis **plus jamais**, car le troisième `fin-jour-12` rencontre le premier, terminé mais toujours là. Avec `removeOnComplete: true`, le même essai enchaîne les phases sans fin.
+
+## Annuler, reprogrammer
+
+Si tous les joueurs ont voté avant la fin du jour, inutile d'attendre. Deux méthodes s'ajoutent à `PhasesService` :
+
+```ts title="src/phases/phases.service.ts" {2,4,10,11}
+async annulerFin(villageId: number, phase: Phase) {
+	const job = await this.file.getJob(idFinDePhase(villageId, phase));
+	if (!job) return false;
+	await job.remove();
+	return true;
+}
+
+async reprogrammerFin(villageId: number, phase: Phase, delaiEnMs: number) {
+	const job = await this.file.getJob(idFinDePhase(villageId, phase));
+	if (!job || !(await job.isDelayed())) return false;
+	await job.changeDelay(delaiEnMs);
+	return true;
+}
+```
+
+- Lignes 2 et 4 : c'est ici que le `jobId` choisi sert : on retrouve le job par son nom, et on le supprime de Redis. Supprimé, il ne peut plus s'exécuter.
+- Lignes 10 et 11 : `changeDelay` change le délai d'un job **encore en attente**. Un job déjà en cours n'est plus différé : on refuse.
+
+Pourquoi `getJob` d'abord, plutôt que `this.file.remove(id)` directement ? Parce que, dans la version de BullMQ utilisée ici (6.3), `remove` a répondu `1` pour un job qui existait, **et** pour un identifiant qui n'avait jamais existé. Impossible de savoir, avec lui seul, si l'on a annulé quelque chose.
+
+## Tester avec un vrai Redis
+
+Les tests utilisent le vrai Redis, comme ils utilisent le vrai PostgreSQL. Deux questions se posent : comment attendre un job, et comment ne pas mélanger ceux de deux tests.
+
+Pour attendre, pas de délai arbitraire : on écoute le worker. `app.get(PhasesProcessor).worker` est le worker BullMQ que NestJS a créé, et il émet `completed` à chaque job terminé.
+
+```ts title="test/phases.e2e-spec.ts"
+/** Promesse du résultat du job, quand le worker de cette application l'a terminé. */
+const termine = (jobId: string) =>
+	new Promise((resolve) => {
+		const worker = app.get(PhasesProcessor).worker;
+		const surFin = (job: { id?: string; returnvalue: unknown }) => {
+			if (job.id !== jobId) return;
+			worker.off('completed', surFin);
+			resolve(job.returnvalue);
+		};
+		worker.on('completed', surFin);
+	});
+
+beforeEach(async () => {
+	await file.obliterate({ force: true });
+	await dataSource.query('TRUNCATE TABLE messages, participations, villages, utilisateurs RESTART IDENTITY CASCADE');
+});
+
+it('à la fin du jour, la nuit tombe, les joueurs sont prévenus, et la fin de la nuit est programmée', async () => {
+	const village = await o.creerVillage('jour');
+	const client = await joueurDans(village);
+	const evenement = attendre(client, 'phase:changee');
+	const fini = termine(idFinDePhase(village, 'jour'));
+	await phases.programmerFin(village, 'jour', 200);
+	expect(await file.getDelayedCount()).toBe(1);
+
+	expect(await evenement).toEqual({ villageId: village, phase: 'nuit' });
+	expect(await fini).toBe('nuit');
+	expect(await phaseDe(village)).toBe('nuit');
+	const suivant = await file.getJob(idFinDePhase(village, 'nuit'));
+	expect(suivant?.data).toEqual({ villageId: village, phase: 'nuit' });
+	expect(await suivant?.getState()).toBe('delayed');
+	expect(suivant?.delay).toBe(60000);
+});
+```
+
+`file` vient de `app.get<Queue>(getQueueToken('phases'))`, `joueurDans` connecte un joueur au village (section b), et `phaseDe` relit la phase par SQL. `obliterate` vide la file entre deux tests ; `force: true` l'y oblige même s'il reste des jobs en cours.
+
+Un piège, rencontré avec ce test précis : le client reçoit `phase:changee` **avant** que le job soit terminé (ligne 25 du worker, avant la 26). La première version s'arrêtait là, et les tests suivants ont échoué avec `Error: Missing key for job fin-jour-1. moveToFinished` : son `obliterate` avait effacé le job que le worker était encore en train de terminer. D'où le `await fini` : chaque test attend que **ses** jobs soient finis.
+
+Les durées de phase du test sont longues (`DUREE_JOUR_MS=60000` dans `.env.test`) : aucune phase suivante ne s'exécute pendant les tests, on vérifie seulement qu'elle est programmée. Et on n'utilise pas les faux minuteurs de Vitest : on a essayé `vi.useFakeTimers()` puis avancé le temps de 61 secondes, et le job de 60 secondes était toujours `delayed`. Le délai est géré par Redis et par le worker, pas par un `setTimeout` que Vitest pourrait accélérer. On programme donc de **vrais** délais, très courts (200 ms, ou 0).
+
+L'annulation et le doublon se testent sans rien attendre, en interrogeant Redis :
+
+```ts title="test/phases.e2e-spec.ts"
+it('annule une fin de phase : le job disparaît de Redis', async () => {
+	const village = await o.creerVillage('jour');
+	await phases.programmerFin(village, 'jour', 60000);
+	expect(await phases.annulerFin(village, 'jour')).toBe(true);
+	expect(await file.getJob(idFinDePhase(village, 'jour'))).toBeUndefined();
+	expect(await file.getDelayedCount()).toBe(0);
+	expect(await phases.annulerFin(village, 'jour')).toBe(false);
+});
+
+it('programmer deux fois le même identifiant ne change rien', async () => {
+	const village = await o.creerVillage('jour');
+	await phases.programmerFin(village, 'jour', 60000);
+	await phases.programmerFin(village, 'jour', 100);
+	const job = await file.getJob(idFinDePhase(village, 'jour'));
+	expect(job?.delay).toBe(60000);
+	expect(await file.getDelayedCount()).toBe(1);
+});
+```
+
+Un job périmé se teste avec un délai de 0 : `programmerFin(village, 'jour', 0)` sur un village déjà dans la nuit, et `await termine(…)` vaut `'ignoré'`.
+
+### Le redémarrage
+
+C'est la raison d'être de tout ceci. Le test arrête l'application pendant qu'un job attend, en démarre une nouvelle, et vérifie que la phase bascule quand même :
+
+```ts title="test/phases.e2e-spec.ts" {4,6,14}
+it('survit à un redémarrage du serveur', async () => {
+	const village = await o.creerVillage('jour');
+	await phases.programmerFin(village, 'jour', 1500);
+	await app.close(); // le serveur s'arrête, le job attend dans Redis
+
+	({ app, url, dataSource } = await demarrer());
+	o = outils(app, dataSource);
+	file = app.get<Queue>(getQueueToken('phases'));
+	phases = app.get(PhasesService);
+	expect(await file.getDelayedCount()).toBe(1);
+
+	const client = await joueurDans(village);
+	const fini = termine(idFinDePhase(village, 'jour'));
+	expect(await attendre(client, 'phase:changee')).toEqual({ villageId: village, phase: 'nuit' });
+	await fini;
+});
+```
+
+Ligne 4, plus aucun worker ne tourne. Ligne 6, une application toute neuve démarre, sans rien savoir du passé. Pourtant, au bout des 1,5 seconde, **son** worker prend le job, et le joueur, connecté à ce nouveau serveur, reçoit la nuit. Le minuteur était dans Redis, pas dans le processus.
+
+## Plusieurs serveurs
+
+En production, on fait souvent tourner **plusieurs instances** du même serveur, pour tenir la charge ou pour redémarrer l'une sans couper le jeu. Chaque instance a son worker, et BullMQ donne chaque job à **un seul** d'entre eux. Voici le problème que ça pose, reproduit dans un test : deux applications A et B, un joueur connecté à A, et le worker de A mis en pause (`worker.pause()`) pour que ce soit celui de B qui prenne le job.
+
+```text
+Error: phase:changee jamais reçu
+```
+
+Le worker de B a bien basculé la phase, et `diffuserPhase` a bien émis, mais sur le serveur socket.io de **B**, qui ne connaît que ses propres clients. Même chose pour le chat : un loup connecté à B écrit, son complice connecté à A n'entend rien (`chat:message jamais reçu`). Les salles de socket.io sont, par défaut, **locales** à chaque instance.
+
+La solution est un **adaptateur** : un composant de socket.io qui relaie chaque émission vers les autres instances, ici par Redis.
+
+```bash
+npm install @socket.io/redis-adapter
+```
+
+```ts title="src/jeu/redis-io.adapter.ts" {17,19,20,22,26}
+import type { INestApplicationContext } from '@nestjs/common';
+import { IoAdapter } from '@nestjs/platform-socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
+import { Redis } from 'ioredis';
+import type { Server, ServerOptions } from 'socket.io';
+
+export class RedisIoAdapter extends IoAdapter {
+	private readonly clients: Redis[] = [];
+
+	constructor(
+		app: INestApplicationContext,
+		private readonly redis: { host: string; port: number },
+	) {
+		super(app);
+	}
+
+	override createIOServer(port: number, options?: ServerOptions): Server {
+		const serveur: Server = super.createIOServer(port, options);
+		const publication = new Redis(this.redis);
+		const abonnement = publication.duplicate();
+		this.clients.push(publication, abonnement);
+		serveur.adapter(createAdapter(publication, abonnement));
+		return serveur;
+	}
+
+	override async dispose() {
+		await super.dispose();
+		await Promise.all(this.clients.map((client) => client.quit()));
+	}
+}
+```
+
+- Ligne 17 : `IoAdapter` est l'adaptateur que NestJS utilise par défaut ; on le prolonge. `createIOServer` fabrique le serveur socket.io.
+- Lignes 19 et 20 : l'adaptateur demande deux connexions Redis : l'une **publie** les émissions de cette instance, l'autre est **abonnée** à celles des autres. `duplicate()` crée la seconde avec les mêmes réglages.
+- Ligne 22 : le serveur socket.io passe par l'adaptateur Redis.
+- Ligne 26 : NestJS appelle `dispose` quand l'application s'arrête (on l'a vérifié) : on y ferme les deux connexions.
+
+L'adaptateur se branche dans `configurerApp`, **pas** dans `main.ts` :
+
+```ts title="src/configurer-app.ts" {7,8}
+import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { RedisIoAdapter } from './jeu/redis-io.adapter.js';
+
+export function configurerApp(app: INestApplication) {
+	app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }));
+	const config = app.get(ConfigService);
+	app.useWebSocketAdapter(new RedisIoAdapter(app, { host: config.getOrThrow('REDIS_HOST'), port: Number(config.getOrThrow('REDIS_PORT')) }));
+}
+```
+
+C'est la leçon de la partie 6 : ce qui n'est que dans `main.ts` n'existe pas dans les tests. Branché dans `main.ts` seulement, l'adaptateur manquerait aux deux applications du test, qui échouerait exactement comme plus haut. Avec lui, les deux tests passent. Et le second montre que même `socketsLeave` (section b) traverse les instances : B fait sortir de la salle des loups un loup mort connecté à A, et celui-ci ne lit plus rien.
+
+## Deux pièges avec le Redis de la partie 10
+
+**Réutiliser son client.** Pourquoi `BullModule` reçoit-il des options de connexion, plutôt que le client `REDIS` de la partie 10, déjà prêt ? On a essayé : une file accepte ce client, mais le worker refuse de démarrer, avec `BullMQ: Your redis options maxRetriesPerRequest must be null.` Un worker attend les jobs avec des commandes Redis qui bloquent longtemps ; or ce client a `maxRetriesPerRequest: 1`, fait pour échouer vite. Laisse BullMQ ouvrir ses propres connexions.
+
+**Vider Redis.** Les tests des abus de la partie 10 appellent `flushdb()` pour remettre les compteurs à zéro. On a vérifié ce que ça fait à BullMQ : un job différé en attente **disparaît** (`getJob` renvoie `undefined`), et le worker continue de traiter les nouveaux jobs. Dans les tests, sans conséquence, puisque chaque fichier prépare ses propres jobs. Sur le Redis de production, un `flushdb` effacerait la fin de phase de tous les villages en cours.
+
+Tous les tests de cette partie (chat, phases, deux instances, et ceux des sections d et e) ont été lancés dix fois de suite : aucun échec.
+
+<Exercices partie={11} de={7} a={9}>
+
+<Exercice numero="11.7" titre="Annuler les commandes impayées">
+Installe BullMQ (Redis tourne déjà depuis la partie 10). À la création d'une commande, programme un job différé `expiration` d'identifiant `expiration-<commandeId>`, avec le délai `DELAI_PAIEMENT_MS` de ta configuration. Le worker passe la commande à `annulee` si elle est encore `en_attente` (avec `transitionner` de l'exercice 6.5), émet `commande:statut` avec `{ commandeId, statut: "annulee" }` dans la salle `compte:<id>` de l'acheteur (exercice 11.5), et renvoie `"annulee"` ; si la commande n'est plus `en_attente`, il renvoie `"ignoré"` sans rien changer. Teste avec un délai de 200 ms : l'acheteur reçoit l'événement, la commande est `annulee` en base, et le résultat du job (attendu avec l'événement `completed` du worker) vaut `"annulee"`. Essaie aussi l'identifiant `expiration:12` et note l'erreur.
+</Exercice>
+
+<Exercice numero="11.8" titre="Payer arrête le minuteur">
+Ajoute `CommandesService.marquerPayee(id)`, qui passe la commande à `payee` et annule le job `expiration-<id>` (la section e s'en servira). Teste, en appelant la méthode depuis le test : après le paiement, `getJob('expiration-<id>')` renvoie `undefined`, `getDelayedCount()` vaut 0, et la commande reste `payee`. Vérifie aussi, avec un identifiant qui n'a jamais existé, ce que répond `file.remove(…)` dans ta version de BullMQ, et explique pourquoi ta méthode passe par `getJob`.
+</Exercice>
+
+<Exercice numero="11.9" titre="Redémarrer, et deux serveurs">
+Écris le test de redémarrage : programme une expiration à 1 500 ms, ferme l'application, démarres-en une nouvelle, vérifie que `getDelayedCount()` vaut 1, puis que la commande finit `annulee`. Puis démarre deux applications dans le même test, connecte le client de l'acheteur à la première, mets en pause le worker de la première (`worker.pause()`) et programme une expiration à 0 ms : sans adaptateur Redis, note l'erreur de ton test ; ajoute `RedisIoAdapter` dans `configurerApp` et vérifie que l'acheteur reçoit `commande:statut`.
+</Exercice>
+
+</Exercices>

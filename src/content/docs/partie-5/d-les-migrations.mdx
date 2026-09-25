@@ -97,9 +97,13 @@ Une conséquence à connaître : si tu oublies `migration:run` sur une base vide
 Un village a une phase — jour ou nuit. Ajoute-la à l'entité :
 
 ```ts title="src/villages/village.entity.ts"
-	@Column({ default: 'jour' })
-	phase: string;
+export type Phase = 'jour' | 'nuit';
+
+	@Column({ type: 'varchar', default: 'jour' })
+	phase: Phase;
 ```
+
+Le type `Phase` (`'jour'` ou `'nuit'`, rien d'autre) fait refuser à TypeScript toute autre valeur : tu le retrouveras dans les guards de la partie 8. `type: 'varchar'` dit à TypeORM quelle colonne créer, pour ne pas dépendre de ce qu'il déduit d'un type union.
 
 Génère la migration, avec un nom qui dit ce qu'elle fait :
 

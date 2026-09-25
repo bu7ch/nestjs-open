@@ -1,0 +1,434 @@
+---
+title: "b · Des canaux privés et authentifiés"
+description: "Vérifier le jeton à la connexion, ouvrir un chat réservé aux loups, faire taire les morts, et rattraper ce qu'on a manqué après une coupure."
+projet: loup-garou
+duree: 80
+prerequis: Section a (le gateway) ; partie 7 (le jeton JWT) ; partie 8 (masquer les rôles).
+exercices: 3
+sidebar:
+  order: 2
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+À la fin de la section a, n'importe qui peut se connecter, entrer dans n'importe quel village et y parler sous un identifiant anonyme. Pour un Loup-Garou, c'est pire qu'un défaut : le jeu repose sur ce que chacun **ne sait pas**. Les loups se concertent la nuit sans que le village les entende, un joueur ne connaît que son propre rôle, et un mort ne souffle plus rien aux vivants. Un seul message mal aiguillé, et la partie est gâchée.
+
+Cette section fait trois choses : savoir **qui** est derrière chaque socket, n'envoyer chaque message **qu'à ceux qui ont le droit** de le lire, et permettre à un joueur qui a perdu sa connexion de **rattraper** la partie sans rien apprendre de plus que les autres.
+
+## Le jeton, à la connexion
+
+En HTTP, le jeton voyage dans chaque requête. Avec socket.io, la connexion reste ouverte : on vérifie le jeton **une fois**, au moment où elle s'établit. Ce premier échange s'appelle la **poignée de main** (*handshake*). Le client y joint son jeton, dans l'option `auth` :
+
+```ts
+const socket = io('http://localhost:3000', { auth: { jeton } });
+```
+
+Côté serveur, on range l'identité sur le socket, dans `socket.data`, un emplacement prévu pour ça. Les événements de la section a s'enrichissent au passage : un message a maintenant un identifiant et un canal, rejoindre un village renvoie tout son état, et une mort s'annonce.
+
+```ts title="src/jeu/evenements.ts" {6,7,12-18,23,24,30,33-35}
+import type { RoleDeJeu } from '../villages/participation.entity.js';
+import type { Phase } from '../villages/village.entity.js';
+import type { Canal } from './message.entity.js';
+
+export interface MessageDeChat {
+	id: number;
+	canal: Canal;
+	auteur: string;
+	texte: string;
+}
+
+export interface EtatDuVillage {
+	villageId: number;
+	phase: Phase;
+	moi: { role: RoleDeJeu; vivant: boolean };
+	joueurs: { pseudo: string; vivant: boolean; role: RoleDeJeu | null }[];
+	messages: MessageDeChat[];
+}
+
+export type Reponse<T> = { ok: true; donnees: T } | { ok: false; erreur: string | string[] };
+
+export interface ClientVersServeur {
+	'village:rejoindre': (demande: { villageId: number }, ack: (reponse: Reponse<EtatDuVillage>) => void) => void;
+	'chat:envoyer': (demande: { villageId: number; canal: Canal; texte: string }, ack: (reponse: Reponse<MessageDeChat>) => void) => void;
+}
+
+export interface ServeurVersClient {
+	'chat:message': (message: MessageDeChat) => void;
+	'phase:changee': (evenement: { villageId: number; phase: Phase }) => void;
+	'joueur:elimine': (evenement: { villageId: number; pseudo: string; role: RoleDeJeu }) => void;
+}
+
+export interface DonneesSocket {
+	utilisateur: { id: number; pseudo: string };
+}
+```
+
+`DonneesSocket` (en bas) décrit ce qu'on range dans `socket.data`. On détaille `EtatDuVillage` plus bas.
+
+socket.io permet d'installer des **middlewares** sur son serveur : des fonctions exécutées à chaque nouvelle connexion, avant tout événement, qui l'acceptent ou la refusent. C'est l'endroit idéal pour vérifier le jeton. On l'installe dans `afterInit`, une méthode que NestJS appelle une fois le serveur socket.io créé :
+
+```ts title="src/jeu/jeu.gateway.ts" {1,6,11,13,17,19}
+type ServeurDeJeu = Server<ClientVersServeur, ServeurVersClient, never, DonneesSocket>;
+type SocketDeJeu = Socket<ClientVersServeur, ServeurVersClient, never, DonneesSocket>;
+
+@WebSocketGateway({ cors: { origin: ['http://localhost:5173'] } })
+@UseFilters(ErreursWsFilter)
+export class JeuGateway implements OnGatewayInit {
+	@WebSocketServer()
+	serveur: ServeurDeJeu;
+
+	constructor(
+		private readonly jwt: JwtService,
+		private readonly villages: VillagesService,
+		@InjectRepository(Message) private readonly messages: Repository<Message>,
+	) {}
+
+	afterInit(serveur: ServeurDeJeu) {
+		serveur.use(async (socket, suivant) => {
+			const jeton: unknown = socket.handshake.auth.jeton;
+			if (typeof jeton !== 'string') return suivant(new Error('Jeton manquant'));
+			try {
+				const payload = await this.jwt.verifyAsync<PayloadJwt>(jeton);
+				socket.data.utilisateur = { id: payload.sub, pseudo: payload.pseudo };
+				suivant();
+			} catch {
+				suivant(new Error('Jeton invalide ou expiré'));
+			}
+		});
+	}
+	// …
+}
+```
+
+- Ligne 1 : le quatrième paramètre de type de `Server` décrit `socket.data`. Le troisième concerne les échanges entre plusieurs serveurs, dont on ne se sert pas : `never`.
+- Ligne 6 : `OnGatewayInit` est l'interface qui déclare `afterInit` : TypeScript vérifie alors que la méthode a la bonne signature.
+- Ligne 11 : le gateway reçoit `JwtService`, le même qu'en partie 7, qui vérifie la signature et l'expiration avec le même secret.
+- Ligne 13 : le dépôt des messages du chat, qu'on va enregistrer en base (on y revient plus bas).
+- Ligne 17 : `serveur.use` installe le middleware. `suivant()` accepte la connexion ; `suivant(new Error(…))` la refuse, et le message de l'erreur part au client.
+- Ligne 19 : `handshake.auth` vient du client, donc de n'importe qui : on vérifie que c'est bien un texte avant de s'en servir.
+
+Côté client, un refus arrive dans l'événement `connect_error`, avec le message :
+
+```text
+io(url)                                  → connect_error « Jeton manquant »
+io(url, { auth: { jeton: 'abc.def.ghi' } }) → connect_error « Jeton invalide ou expiré »
+io(url, { auth: { jeton: <vrai jeton> } }) → connect
+```
+
+Une autre méthode circule souvent : vérifier le jeton dans `handleConnection` et appeler `client.disconnect()` en cas d'échec. On l'a essayée. Le client reçoit d'abord `connect`, se croit connecté, puis `disconnect` avec la raison `io server disconnect`, sans le moindre message pour dire pourquoi. Le middleware, lui, refuse **avant** que la connexion n'existe, avec une raison.
+
+Une conséquence de « une fois, à la connexion » : on a connecté un client avec un jeton valable une seconde, attendu qu'il expire, puis envoyé `village:rejoindre`. La demande est **acceptée**. L'expiration du jeton ne coupe pas un socket déjà ouvert. Si tu dois exclure un joueur, par exemple un compte banni, il faudra le déconnecter toi-même.
+
+### CORS ne protège rien
+
+Dans la section a, l'option `cors` du gateway laissait passer le front et bloquait les autres origines dans un navigateur. On a ensuite ouvert une connexion en WebSocket direct, avec un en-tête `Origin: http://mechant.example` et un jeton valide : elle est **acceptée**. CORS est une règle que les navigateurs s'appliquent à eux-mêmes ; un programme qui n'est pas un navigateur l'ignore. Ce qui protège ton serveur, c'est le jeton.
+
+## Trois salles par village
+
+Chaque joueur connecté entre dans des salles, selon ce qu'il a **le droit** de recevoir :
+
+| Salle | Qui y entre | Ce qu'on y envoie |
+|---|---|---|
+| `village:12` | tous les participants | le chat du jour, les changements de phase, les morts |
+| `village:12:loups` | les loups **vivants** | le chat de la nuit |
+| `village:12:joueur:5` | les sockets de ce joueur (il peut avoir deux onglets ouverts) | ce qui ne concerne que lui |
+
+```ts title="src/jeu/jeu.gateway.ts"
+export const salleDuVillage = (villageId: number) => `village:${villageId}`;
+export const salleDesLoups = (villageId: number) => `village:${villageId}:loups`;
+export const salleDuJoueur = (villageId: number, utilisateurId: number) => `village:${villageId}:joueur:${utilisateurId}`;
+```
+
+`village:rejoindre` décide de ces salles d'après la **base**, jamais d'après ce que le client affirme :
+
+```ts title="src/jeu/jeu.gateway.ts" {3,4,5,9,10,11,13,14,15,16,17,18,30}
+@SubscribeMessage('village:rejoindre')
+async rejoindre(@ConnectedSocket() client: SocketDeJeu, @MessageBody() { villageId }: RejoindreDto): Promise<{ ok: true; donnees: EtatDuVillage }> {
+	const moi = client.data.utilisateur;
+	const participation = await this.villages.participationDe(villageId, moi.id);
+	if (!participation) throw new ForbiddenException('Tu ne participes pas à ce village');
+	const village = await this.villages.trouverSansParticipants(villageId);
+	if (!village) throw new NotFoundException(`Village ${villageId} introuvable`);
+
+	const estLoup = participation.role === 'loup-garou' && participation.vivant;
+	await client.join([salleDuVillage(villageId), salleDuJoueur(villageId, moi.id)]);
+	if (estLoup) await client.join(salleDesLoups(villageId));
+
+	const participants = await this.villages.participantsDe(villageId);
+	const canaux: Message['canal'][] = estLoup ? ['village', 'loups'] : ['village'];
+	const derniers = await this.messages.find({
+		where: { village: { id: villageId }, canal: In(canaux) },
+		order: { id: 'DESC' },
+		take: 50,
+	});
+
+	return {
+		ok: true,
+		donnees: {
+			villageId,
+			phase: village.phase,
+			moi: { role: participation.role, vivant: participation.vivant },
+			joueurs: participants.map((p) => ({
+				pseudo: p.utilisateur.pseudo,
+				vivant: p.vivant,
+				role: p.utilisateur.id === moi.id || !p.vivant ? p.role : null,
+			})),
+			messages: derniers.reverse().map(({ id, canal, auteur, texte }) => ({ id, canal, auteur, texte })),
+		},
+	};
+}
+```
+
+- Lignes 3 à 5 : l'identité vient de `client.data`, posée par le middleware, et la participation de la base. Un joueur qui n'est pas de ce village est refusé, quel que soit l'identifiant qu'il envoie.
+- Lignes 9 à 11 : la salle des loups n'est ouverte qu'à un loup **vivant**. Le rôle est celui de la base : le client n'a aucun moyen de le choisir.
+- Lignes 13 à 18 : l'accusé de réception contient l'**état** du village, dont les 50 derniers messages que ce joueur a le droit de lire. Pour un villageois, jamais ceux des loups. On les lit du plus récent au plus ancien, pour garder les 50 derniers, puis `reverse()` les remet dans l'ordre de lecture.
+- Ligne 30 : la même règle que `MasquerRolesInterceptor` en partie 8 : on voit son propre rôle et celui des morts, `null` pour les autres vivants.
+
+Pour que les messages puissent être relus, on les enregistre dans une table :
+
+```ts title="src/jeu/message.entity.ts"
+export type Canal = 'village' | 'loups';
+
+@Entity('messages')
+export class Message {
+	@PrimaryGeneratedColumn()
+	id: number;
+
+	@ManyToOne(() => Village, { onDelete: 'CASCADE' })
+	village: Village;
+
+	@Column({ type: 'varchar' })
+	canal: Canal;
+
+	@Column()
+	auteur: string;
+
+	@Column()
+	texte: string;
+
+	@CreateDateColumn()
+	envoyeLe: Date;
+}
+```
+
+`JeuModule` importe `TypeOrmModule.forFeature([Message])`. Dans la base de test, `synchronize` crée la table ; pour ta base de développement, écris sa migration, comme en partie 5.
+
+## Parler, et à qui
+
+`EnvoyerMessageDto` gagne un champ `canal`, validé par `@IsIn(['village', 'loups'])`. Les règles sont vérifiées **au moment de l'envoi** :
+
+```ts title="src/jeu/jeu.gateway.ts" {6,10,11,12,13,14,16,18,19}
+@SubscribeMessage('chat:envoyer')
+async envoyer(@ConnectedSocket() client: SocketDeJeu, @MessageBody() dto: EnvoyerMessageDto): Promise<{ ok: true; donnees: MessageDeChat }> {
+	const moi = client.data.utilisateur;
+	const participation = await this.villages.participationDe(dto.villageId, moi.id);
+	if (!participation) throw new ForbiddenException('Tu ne participes pas à ce village');
+	if (!participation.vivant) throw new ForbiddenException('Les morts ne parlent plus');
+	const village = await this.villages.trouverSansParticipants(dto.villageId);
+	if (!village) throw new NotFoundException(`Village ${dto.villageId} introuvable`);
+
+	if (dto.canal === 'village' && village.phase !== 'jour') throw new ForbiddenException('Le village dort : c\'est la nuit');
+	if (dto.canal === 'loups') {
+		if (participation.role !== 'loup-garou') throw new ForbiddenException('Canal réservé aux loups');
+		if (village.phase !== 'nuit') throw new ForbiddenException('Les loups ne se parlent que la nuit');
+	}
+
+	const { id, canal, auteur, texte } = await this.messages.save({ village: { id: dto.villageId }, canal: dto.canal, auteur: moi.pseudo, texte: dto.texte });
+	const message = { id, canal, auteur, texte };
+	const salle = canal === 'loups' ? salleDesLoups(dto.villageId) : salleDuVillage(dto.villageId);
+	this.serveur.to(salle).emit('chat:message', message);
+	return { ok: true, donnees: message };
+}
+```
+
+- Ligne 6 : un mort ne parle plus, sur aucun canal.
+- Lignes 10 à 14 : le jour, on parle au village ; la nuit, seuls les loups se parlent, entre eux.
+- Ligne 16 : l'auteur est le pseudo **du jeton**. Un client ne peut plus parler au nom d'un autre.
+- Lignes 18 et 19 : le message part dans la seule salle qui correspond à son canal.
+
+Pourquoi vérifier le rôle ligne 12, puisque seuls les loups sont dans leur salle ? Parce que la salle décide de qui **reçoit**, pas de qui **envoie**. Sans cette ligne, un villageois qui envoie `{ canal: 'loups' }` n'est pas dans la salle, mais son message y part quand même, et les loups le lisent : on l'a vérifié en la retirant.
+
+## Les morts
+
+Quand un joueur meurt (les votes et les attaques de la partie 8 y mènent), la base le dit, mais ses sockets sont **toujours dans leurs salles** : un loup mort continuerait de lire le chat des loups. Le gateway s'en occupe :
+
+```ts title="src/jeu/jeu.gateway.ts" {3}
+async eliminer(villageId: number, utilisateurId: number) {
+	const participation = await this.villages.eliminer(villageId, utilisateurId);
+	this.serveur.in(salleDuJoueur(villageId, utilisateurId)).socketsLeave(salleDesLoups(villageId));
+	this.serveur.to(salleDuVillage(villageId)).emit('joueur:elimine', { villageId, pseudo: participation.utilisateur.pseudo, role: participation.role });
+}
+```
+
+```ts title="src/villages/villages.service.ts"
+async eliminer(villageId: number, utilisateurId: number) {
+	const participation = await this.participationDe(villageId, utilisateurId);
+	if (!participation) throw new NotFoundException('Participation introuvable');
+	participation.vivant = false;
+	return this.participations.save(participation);
+}
+```
+
+La ligne 3 fait sortir **tous** les sockets de ce joueur (sa salle personnelle) de la salle des loups, sans avoir à les chercher un par un. L'annonce `joueur:elimine` révèle le rôle du mort : c'est la règle du jeu, et celle de la partie 8. Pour avoir le pseudo, `participationDe` doit charger la relation `utilisateur` (option `relations: { utilisateur: true }`).
+
+## Où l'information peut fuir
+
+Chaque règle ci-dessus a son test, et chaque test a été vérifié **en cassant exprès** la règle : on retire la ligne, le test doit tomber.
+
+| Si tu retires… | Ce qui fuit | Le test qui tombe |
+|---|---|---|
+| le `if (estLoup)` devant l'entrée dans la salle des loups | le chat des loups arrive à tout le village | la nuit, le loup reçoit le chat des loups, le villageois non |
+| la vérification du rôle à l'envoi | un villageois écrit aux loups | un villageois ne peut pas écrire aux loups |
+| le `socketsLeave` de `eliminer` | un loup mort lit encore ses complices | un loup éliminé quitte le canal des loups |
+| le filtre des canaux dans le rattrapage | un villageois qui se reconnecte lit la nuit des loups | la reconnexion rattrape les messages manqués |
+| le masquage des rôles dans l'état | un joueur qui se reconnecte voit le rôle de tous | la reconnexion rattrape les messages manqués |
+
+C'est la bonne façon d'écrire ces tests : un test qui passe encore quand la règle a disparu ne protège rien (tu l'as vu en partie 6, avec la couverture).
+
+## Se reconnecter
+
+Un téléphone passe dans un tunnel, le Wi-Fi hésite : la connexion se coupe. Le client socket.io se reconnecte **tout seul**. Mais on a observé deux choses :
+
+- côté serveur, c'est un **nouveau** socket, qui n'est dans **aucune** salle. Un message envoyé au village après la reconnexion ne lui arrive pas, tant qu'il n'a pas renvoyé `village:rejoindre` ;
+- les messages envoyés au village **avant** qu'il l'ait fait sont perdus pour lui : ils ne lui arrivent pas, ni tout de suite, ni après.
+
+D'où la règle pour le front : à **chaque** événement `connect`, pas seulement au premier, renvoyer `village:rejoindre`. Et l'accusé de réception, qui contient l'état complet et les derniers messages lus en base, remplace tout ce que le client croyait savoir. Le rattrapage suit exactement les mêmes règles que le direct : un villageois qui revient ne lit pas plus la nuit des loups que s'il était resté.
+
+## Tester
+
+Les outils de test s'enrichissent : `connecter` transmet le jeton, et `outils` fabrique joueurs, villages et participations par SQL, comme en partie 8.
+
+```ts title="test/aide.ts"
+export function connecter(url: string, jeton?: string): Promise<ClientDeJeu> {
+	const client: ClientDeJeu = io(url, { transports: ['websocket'], auth: jeton ? { jeton } : {}, reconnection: false });
+	return new Promise((resolve, reject) => {
+		client.once('connect', () => resolve(client));
+		client.once('connect_error', (erreur) => { client.close(); reject(erreur); });
+	});
+}
+
+export function outils(app: INestApplication, dataSource: DataSource) {
+	return {
+		creerJoueur: async (pseudo: string) => {
+			const [{ id }] = await dataSource.query('INSERT INTO utilisateurs (pseudo) VALUES ($1) RETURNING id', [pseudo]);
+			const jeton = await app.get(JwtService).signAsync({ sub: id, pseudo, role: 'joueur' });
+			return { id: id as number, jeton };
+		},
+		creerVillage: async (phase: 'jour' | 'nuit') => {
+			const [{ id }] = await dataSource.query('INSERT INTO villages (nom, phase) VALUES ($1, $2) RETURNING id', ['Lune Rousse', phase]);
+			return id as number;
+		},
+		faireParticiper: (villageId: number, utilisateurId: number, role: string, vivant = true) =>
+			dataSource.query('INSERT INTO participations (role, vivant, "villageId", "utilisateurId") VALUES ($1, $2, $3, $4)', [role, vivant, villageId, utilisateurId]),
+	};
+}
+```
+
+En cas de refus, `connecter` referme le client avant de rejeter la promesse : il ne reste rien d'ouvert derrière un test qui attendait ce refus. Le `beforeEach` vide aussi la table `messages` : `TRUNCATE TABLE messages, participations, villages, utilisateurs RESTART IDENTITY CASCADE`.
+
+Chaque test part d'une petite partie : un loup, une villageoise (Alice) et une voyante déjà morte (Clara).
+
+```ts title="test/chat.e2e-spec.ts"
+it('refuse un client sans jeton', async () => {
+	await expect(connecter(url)).rejects.toThrow('Jeton manquant');
+});
+
+it('la nuit, le loup reçoit le chat des loups, le villageois non', async () => {
+	const { village, loup, alice } = await partie('nuit');
+	const loup2 = await o.creerJoueur('Loup2');
+	await o.faireParticiper(village, loup2.id, 'loup-garou');
+
+	const clientLoup = await ouvrir(loup.jeton);
+	const clientLoup2 = await ouvrir(loup2.jeton);
+	const clientAlice = await ouvrir(alice.jeton);
+	for (const c of [clientLoup, clientLoup2, clientAlice]) await c.emitWithAck('village:rejoindre', { villageId: village });
+	const recusParAlice: unknown[] = [];
+	clientAlice.onAny((evenement, contenu) => recusParAlice.push([evenement, contenu]));
+
+	const recu = attendre(clientLoup2, 'chat:message');
+	await clientLoup.emitWithAck('chat:envoyer', { villageId: village, canal: 'loups', texte: 'On mange Alice ?' });
+	expect(await recu).toMatchObject({ canal: 'loups', auteur: 'Loup', texte: 'On mange Alice ?' });
+
+	await clientAlice.emitWithAck('village:rejoindre', { villageId: village });
+	expect(recusParAlice).toEqual([]);
+});
+
+it('un loup éliminé quitte le canal des loups, et ne parle plus', async () => {
+	const { village, loup } = await partie('nuit');
+	const loup2 = await o.creerJoueur('Loup2');
+	await o.faireParticiper(village, loup2.id, 'loup-garou');
+	const clientLoup = await ouvrir(loup.jeton);
+	const clientLoup2 = await ouvrir(loup2.jeton);
+	await clientLoup.emitWithAck('village:rejoindre', { villageId: village });
+	await clientLoup2.emitWithAck('village:rejoindre', { villageId: village });
+
+	const annonce = attendre(clientLoup2, 'joueur:elimine');
+	await app.get(JeuGateway).eliminer(village, loup.id);
+	expect(await annonce).toEqual({ villageId: village, pseudo: 'Loup', role: 'loup-garou' });
+
+	const recusParLeMort: unknown[] = [];
+	clientLoup.on('chat:message', (m) => recusParLeMort.push(m));
+	await clientLoup2.emitWithAck('chat:envoyer', { villageId: village, canal: 'loups', texte: 'Je suis seul' });
+	expect(await clientLoup.emitWithAck('chat:envoyer', { villageId: village, canal: 'loups', texte: 'Vengez-moi' })).toEqual({
+		ok: false,
+		erreur: 'Les morts ne parlent plus',
+	});
+	expect(recusParLeMort).toEqual([]);
+});
+```
+
+`onAny` écoute **tous** les événements : Alice ne doit rien recevoir du tout, pas seulement aucun `chat:message`. Dans le dernier test, l'aller-retour du mort (sa tentative refusée) sert de point de synchronisation : le message du second loup est parti avant, donc s'il avait dû arriver, il serait là.
+
+La reconnexion se teste de deux façons. `disconnect()` puis `connect()` pour le rattrapage :
+
+```ts title="test/chat.e2e-spec.ts"
+it('rattrape les messages manqués, sans ceux des loups pour un villageois', async () => {
+	const { village, loup, alice } = await partie('jour');
+	const clientAlice = await ouvrir(alice.jeton);
+	const clientLoup = await ouvrir(loup.jeton);
+	await clientAlice.emitWithAck('village:rejoindre', { villageId: village });
+	await clientLoup.emitWithAck('village:rejoindre', { villageId: village });
+
+	clientAlice.disconnect();
+	await clientLoup.emitWithAck('chat:envoyer', { villageId: village, canal: 'village', texte: 'Alice est partie ?' });
+	await dataSource.query('UPDATE villages SET phase = \'nuit\'');
+	await clientLoup.emitWithAck('chat:envoyer', { villageId: village, canal: 'loups', texte: 'Cette nuit, Alice' });
+
+	clientAlice.connect();
+	await new Promise((resolve) => clientAlice.once('connect', () => resolve(null)));
+	const etat = await clientAlice.emitWithAck('village:rejoindre', { villageId: village });
+	expect(etat).toEqual({
+		ok: true,
+		donnees: {
+			villageId: village,
+			phase: 'nuit',
+			moi: { role: 'villageois', vivant: true },
+			joueurs: [
+				{ pseudo: 'Loup', vivant: true, role: null },
+				{ pseudo: 'Alice', vivant: true, role: 'villageois' },
+				{ pseudo: 'Clara', vivant: false, role: 'voyante' },
+			],
+			messages: [{ id: 1, canal: 'village', auteur: 'Loup', texte: 'Alice est partie ?' }],
+		},
+	});
+});
+```
+
+Et une vraie coupure, pour vérifier la reconnexion automatique : ce client est créé avec `reconnectionDelay: 50` (au lieu de `reconnection: false`), puis `clientAlice.io.engine.close()` ferme la connexion sous ses pieds, comme le ferait un réseau qui lâche. L'événement `reconnect` de `clientAlice.io` arrive, et le test vérifie qu'un message du village ne lui parvient **qu'après** qu'il a renvoyé `village:rejoindre`.
+
+<Exercices partie={11} de={4} a={6}>
+
+<Exercice numero="11.4" titre="Un gateway authentifié">
+Ajoute le middleware de connexion à ton `CommandesGateway`, avec le jeton de la partie 7. Teste : sans jeton, `connect_error` avec `Jeton manquant` ; avec un jeton falsifié, `Jeton invalide ou expiré`. Puis `vendeur:suivre` ne fait plus confiance au client : seul le compte propriétaire du vendeur (relation de l'exercice 7.14) ou un `admin` peut entrer dans la salle `vendeur:3`. Un autre compte reçoit `{ ok: false, erreur: "Ce vendeur ne t'appartient pas" }`, et ne reçoit ensuite aucun `commande:creee` de ce vendeur.
+</Exercice>
+
+<Exercice numero="11.5" titre="Chacun ses lignes">
+Une commande peut contenir les produits de deux vendeurs. Fais en sorte que `commande:creee` n'envoie à chaque vendeur **que ses propres lignes** (jamais celles du concurrent). Ajoute à `Commande` le compte qui l'a passée (rempli depuis le jeton dans `POST /api/commandes`, avec sa migration), fais entrer chaque socket dans la salle `compte:<id>` à la connexion, et émets `commande:statut` avec `{ commandeId, statut }` dans la salle de l'acheteur quand `POST /api/commandes/:id/expedier` réussit. Teste avec une commande à deux vendeurs : chaque vendeur ne reçoit que ses lignes, l'acheteur reçoit `commande:statut`, un autre acheteur ne reçoit rien (vérifie-le avec `onAny`). Retire ensuite le filtrage des lignes : un de tes tests doit tomber.
+</Exercice>
+
+<Exercice numero="11.6" titre="Rattraper les commandes manquées">
+L'accusé de `vendeur:suivre` renvoie maintenant la liste des commandes `en_attente` qui contiennent un produit du vendeur, avec seulement ses lignes. Teste le rattrapage : le vendeur se déconnecte (`disconnect()`), une commande est passée, il se reconnecte (`connect()`) et renvoie `vendeur:suivre` : la commande est dans l'accusé. Teste aussi une vraie coupure avec `client.io.engine.close()` et `reconnectionDelay: 50` : après l'événement `reconnect`, une nouvelle commande n'arrive au vendeur qu'une fois `vendeur:suivre` renvoyé.
+</Exercice>
+
+</Exercices>

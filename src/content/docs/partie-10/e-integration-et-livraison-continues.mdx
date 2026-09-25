@@ -1,0 +1,303 @@
+---
+title: "e · Intégration et livraison continues"
+description: "Un workflow GitHub Actions qui teste chaque push, construit l'image et la publie, et le principe d'un déploiement avec Docker Compose."
+projet: loup-garou
+duree: 70
+prerequis: Sections a à d ; un compte GitHub.
+exercices: 3
+sidebar:
+  order: 5
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Jusqu'ici, c'est toi qui lances les tests, et c'est toi qui construis l'image. Tu finiras par oublier une fois, le vendredi soir. L'**intégration continue** (CI, *continuous integration*) confie ce travail à une machine : à chaque `git push`, un serveur récupère le code, installe les dépendances et lance **tous** les tests. La **livraison continue** (CD, *continuous delivery*) va plus loin : si les tests passent, la même machine fabrique l'image et la publie, prête à être déployée.
+
+**GitHub Actions** est le service de CI de GitHub : on décrit le travail dans un fichier YAML du dossier `.github/workflows/`, et GitHub l'exécute sur ses machines, gratuitement pour un dépôt public.
+
+## Deux exemples réels : ce cours
+
+Le site que tu lis est construit et publié par un workflow, `.github/workflows/deploy.yml` du dépôt du cours :
+
+```yaml title=".github/workflows/deploy.yml (extrait)"
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    # … publie le dossier dist sur GitHub Pages
+```
+
+Tout le vocabulaire est là :
+
+- `on` : **quand** le workflow se lance. Ici, à chaque push sur `main`, et à la main depuis l'onglet **Actions** (`workflow_dispatch`).
+- `jobs` : des **tâches**, chacune sur une machine neuve (`runs-on: ubuntu-latest`). Par défaut, elles tournent en parallèle ; `needs: build` fait attendre `deploy` que `build` ait réussi.
+- `steps` : les étapes d'une tâche, dans l'ordre. `uses` appelle une **action**, un morceau de workflow réutilisable publié par quelqu'un d'autre (`actions/checkout` récupère le code du dépôt, `actions/setup-node` installe Node). `run` exécute une commande.
+- `cache: npm` garde le cache de npm d'une exécution à l'autre : `npm ci` télécharge moins.
+
+Le dépôt d'exercices a lui aussi un workflow, `ci.yml`, qui lance les tests de tes exercices. Il y ajoute ce qu'il faut pour des tests avec une base : un **service**, un conteneur PostgreSQL démarré à côté de la tâche, avec un healthcheck, exactement comme en section c.
+
+```yaml title=".github/workflows/ci.yml du dépôt d'exercices (extrait)"
+services:
+  postgres:
+    image: postgres:16
+    env:
+      POSTGRES_USER: marketplace
+      POSTGRES_PASSWORD: marketplace
+      POSTGRES_DB: marketplace_test
+    ports:
+      - 5432:5432
+    options: >-
+      --health-cmd "pg_isready -U marketplace -d marketplace_test"
+      --health-interval 5s
+      --health-timeout 5s
+      --health-retries 10
+```
+
+Ces deux workflows passaient. Mais leur dernière exécution, le 25 septembre 2026, portait cet avertissement :
+
+```text
+Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-node@v4.
+```
+
+Une action est un programme, qui a sa propre version de Node. Les versions `v4` datent de 2023, et GitHub abandonne Node 20 : il les fait déjà tourner de force avec Node 24. Un workflow vieillit comme le reste du code. Nous les avons montés à leurs dernières versions majeures (`checkout@v7`, `setup-node@v7`, `upload-pages-artifact@v5`, `deploy-pages@v5`), et le même exercice t'attend sur ton fork : un avertissement se lit, et se corrige.
+
+## Le workflow du Loup-Garou
+
+```yaml title=".github/workflows/ci.yml" {11,25,34,52-55,60,61}
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: loupgarou
+          POSTGRES_PASSWORD: loupgarou
+          POSTGRES_DB: loupgarou_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U loupgarou -d loupgarou_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USER: loupgarou
+      DB_PASSWORD: loupgarou
+      DB_NAME: loupgarou_test
+      NOMBRE_MAX_VILLAGES: 50
+      JWT_SECRET: un-secret-de-test-uniquement-pour-la-ci-32-caracteres
+      REDIS_HOST: localhost
+      THROTTLE_ACTIF: 'false'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Les migrations s'appliquent sur une base vide
+        run: npx typeorm migration:run -d dist/data-source.js
+      - name: Aucune migration oubliée
+        run: npx typeorm migration:generate --check -d dist/data-source.js src/migrations/Oubli
+      - run: npm test
+      - run: npm run test:e2e
+
+  image:
+    needs: tests
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha
+            type=raw,value=latest
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+```
+
+### La tâche `tests`
+
+- **Deux services**, PostgreSQL et Redis, publiés sur les ports habituels de la machine de la CI : les tests s'y connectent par `localhost`. La base s'appelle `loupgarou_test`, donc le garde-fou `_test` de la partie 6 est content.
+- **`env`** : les variables de la tâche. Ce sont des valeurs **de test** : le `JWT_SECRET` ici ne protège rien, il ne sert qu'aux jetons des tests, et il peut donc figurer dans le fichier. Un vrai secret, lui, irait dans les **secrets du dépôt** (réglages du dépôt, *Secrets and variables*, puis `${{ secrets.NOM }}`), comme `GITHUB_TOKEN` plus bas. Une variable d'environnement l'emporte sur `.env.test`, que `ConfigModule` ne lit que pour compléter.
+- **Les migrations, vérifiées deux fois.** La partie 6 l'a noté : les tests de bout en bout créent les tables avec `synchronize`, ils **ne testent pas tes migrations**. Deux étapes comblent ce trou. La première exécute toutes les migrations sur la base neuve de la CI, avec la CLI de TypeORM comme en section b : une migration qui plante se voit ici. La seconde attrape la migration **oubliée** (une colonne ajoutée à une entité, sans générer sa migration), qui passerait tous les tests puis casserait la production. `migration:generate --check` compare les entités à la base qu'on vient de migrer : s'il n'y a rien à générer, il affiche `No changes in database schema were found` ; sinon, il affiche `Unexpected changes in database schema were found in check mode:` suivi de la migration qui manque, n'écrit aucun fichier, et échoue. On l'a vérifié en ajoutant une colonne `tour` à `Village` sans migration. Ensuite, les tests de bout en bout repartent d'un schéma neuf (`dropSchema`).
+- `npm run build` avant les tests : la compilation vérifie les types, ce que Vitest ne fait pas.
+
+### La tâche `image`
+
+- `needs: tests` : l'image n'est construite que si **tous** les tests ont réussi.
+- `if: github.event_name == 'push'` : pas pour une *pull request*, dont le code n'est pas encore accepté. Comme `on.push` ne vise que `main`, seule la branche principale publie une image.
+- **GHCR** (*GitHub Container Registry*, `ghcr.io`) est le registre d'images de GitHub : l'équivalent de Docker Hub, rattaché à ton compte. `permissions: packages: write` autorise le workflow à y écrire, et `secrets.GITHUB_TOKEN` est un jeton que GitHub crée pour chaque exécution, valable seulement pendant celle-ci. Tu n'as aucun secret à créer.
+- `docker/metadata-action` fabrique les noms de l'image : `latest`, et `sha-` suivi des sept premiers caractères du commit. Le second désigne **une version précise** : pour revenir en arrière après un mauvais déploiement, tu relances l'image du commit précédent. `latest`, lui, change à chaque push.
+- `cache-from` et `cache-to` gardent les couches de l'image entre deux exécutions (le cache de GitHub Actions, `type=gha`) : sans eux, chaque exécution repartirait de zéro, et l'ordre soigné du Dockerfile de la section b ne servirait à rien.
+
+Un détail qui casse : un nom d'image Docker s'écrit **en minuscules**. Si ton dépôt s'appelle `Bu7ch/Loup-Garou`, Docker refuse `ghcr.io/Bu7ch/Loup-Garou` :
+
+```text
+invalid reference format: repository name (Bu7ch/Loup-Garou) must be lowercase
+```
+
+`metadata-action` passe le nom en minuscules ; si tu écris les noms à la main dans `tags`, fais-le toi-même.
+
+## Vérifier un workflow avant de le pousser
+
+Un workflow ne s'exécute que sur GitHub : une faute de frappe se découvre après le push, dans l'onglet Actions. **actionlint** vérifie le fichier avant, sur ta machine. On l'a lancé avec son image Docker :
+
+```bash
+docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:latest -color=false .github/workflows/ci.yml
+```
+
+Aucune sortie et le code `0` : le fichier est correct. Sans le nom du fichier, actionlint cherche un dépôt Git et, dans un dossier qui n'en est pas un, répond `no project was found in any parent directories`. Il vérifie la syntaxe, les expressions `${{ … }}`, les scripts des `run` (avec shellcheck) et, pour les actions qu'il connaît, les noms des paramètres : `fetch-deph: 1` sous `actions/checkout@v4` donne `input "fetch-deph" is not defined in action "actions/checkout@v4"`. Mais la même faute sous `actions/checkout@v7` n'a **pas** été signalée : sa version 1.7.12 ne connaît pas encore les paramètres de cette version. Pour ces actions récentes, on a vérifié chaque paramètre à la main, dans leur fichier `action.yml`.
+
+Et on a rejoué la tâche `tests` sur une copie neuve du projet, avec un PostgreSQL et un Redis frais et les mêmes variables : `npm ci`, `npm run build`, les migrations (`Migration CreerTables… has been executed successfully`), puis `npm test` et `npm run test:e2e`, tous verts, et enfin `docker build`. La tâche `image`, elle, n'a pas été exécutée pour ce cours : elle ne tourne que sur GitHub, avec ton compte (c'est l'exercice 10.14).
+
+## Le principe d'un déploiement
+
+Il reste à faire tourner l'image quelque part. Il existe des dizaines de façons ; la plus simple à comprendre réutilise tout ce que tu as fait : **un serveur** (une machine louée chez un hébergeur, sous Linux) avec Docker installé, et un fichier Compose.
+
+Sur le serveur, on ne construit rien : on **télécharge** l'image publiée par la CI. Le fichier de production diffère de celui de la section c en quatre points :
+
+```yaml title="compose.prod.yaml (extrait)" {3,6,8,9}
+services:
+  migrations:
+    image: ghcr.io/ton-compte/loup-garou:latest
+    # … command, environment et depends_on comme en section c
+  api:
+    image: ghcr.io/ton-compte/loup-garou:latest
+    ports:
+      - "127.0.0.1:3000:3000"
+    stop_grace_period: 30s
+    # … environment, depends_on, healthcheck et restart comme en section c
+  db:
+    # … comme en section c, mais sans « ports » ; idem pour redis
+    volumes:
+      - donnees-postgres:/var/lib/postgresql/data
+```
+
+- `image` au lieu de `build` : l'image vient du registre.
+- La base et Redis n'ont **plus de `ports`** : seuls les autres conteneurs du réseau privé les joignent. Rien, depuis Internet, ne peut essayer un mot de passe sur ta base.
+- `127.0.0.1:3000:3000` publie l'API **seulement sur le serveur lui-même**, pas sur Internet. Devant elle, un **reverse proxy** (Caddy ou Nginx, par exemple) reçoit les connexions HTTPS, gère le certificat, et transmet les requêtes à `127.0.0.1:3000`.
+- `stop_grace_period: 30s` (section d).
+
+Et la mise à jour, à chaque nouvelle image, tient en deux commandes, lancées sur le serveur, à côté du `.env` de production :
+
+```bash
+docker compose -f compose.prod.yaml pull
+docker compose -f compose.prod.yaml up -d
+```
+
+`pull` télécharge la nouvelle image ; `up -d` recrée les conteneurs dont l'image a changé. On a observé l'ordre : Compose arrête d'abord l'ancienne API (son `SIGTERM` lui laisse finir ses requêtes, section d), exécute les migrations avec la nouvelle image, puis démarre la nouvelle API. En interrogeant `/sante` toutes les 100 ms pendant la mise à jour, l'API n'a pas répondu pendant 1,6 seconde. Supprimer cette coupure demande plusieurs instances et un proxy qui bascule de l'une à l'autre : c'est le sujet de la partie 12. Si l'image est privée sur GHCR, le serveur doit d'abord s'y connecter avec `docker login ghcr.io`.
+
+Ce qu'on a vérifié, et ce qu'on n'a pas vérifié : on a lancé ce `compose.prod.yaml` sur une machine de développement, avec une image construite localement et nommée comme celle du registre. Les migrations, les healthchecks, l'API sur `127.0.0.1:3000`, la base sans port publié et la mise à jour par `up -d` fonctionnent. Même `docker compose ps` a besoin des variables : sans le fichier, il s'arrête sur le même `required variable DB_USER is missing a value`. Le `pull` depuis GHCR et un vrai serveur avec son reverse proxy n'ont pas été testés ici.
+
+### Derrière un proxy : l'adresse du client
+
+La partie 7 l'avait annoncé : derrière un reverse proxy, l'API voit **l'adresse du proxy**, la même pour tous les clients. Le throttler compte alors tout le monde ensemble : cinq mauvaises connexions de n'importe qui bloquent la connexion pour **tous** les joueurs. Le proxy ajoute l'adresse du vrai client dans l'en-tête `X-Forwarded-For` ; encore faut-il dire à Express de le croire :
+
+```ts title="src/configurer-app.ts" {2}
+export function configurerApp(app: INestApplication) {
+	app.getHttpAdapter().getInstance().set('trust proxy', 1);
+	app.use(helmet());
+	// … la suite, comme en partie 9
+}
+```
+
+`app.getHttpAdapter().getInstance()` donne l'application Express sous NestJS, et `'trust proxy', 1` lui dit de faire confiance à **un** intermédiaire : l'adresse du client est celle que ce proxy a écrite. Le test :
+
+```ts title="test/proxy.e2e-spec.ts"
+const connexion = (ip: string) =>
+	http().post('/api/auth/connexion').set('X-Forwarded-For', ip).send({ pseudo: 'personne', motDePasse: 'mauvais-mdp' });
+
+beforeAll(async () => {
+	process.env.THROTTLE_ACTIF = 'true';
+	// … création de l'application, comme d'habitude
+});
+
+beforeEach(async () => {
+	await app.get<Redis>(REDIS).flushdb();
+});
+
+it('compte chaque client à part, d\'après X-Forwarded-For', async () => {
+	for (let i = 0; i < 5; i++) await connexion('203.0.113.1').expect(401);
+	await connexion('203.0.113.1').expect(429);
+	await connexion('203.0.113.2').expect(401);
+});
+```
+
+Sans la ligne `trust proxy`, le dernier appel reçoit `429` : `expected 401 "Unauthorized", got 429 "Too Many Requests"`. Tous les clients partagent un compteur.
+
+Le revers est important : `X-Forwarded-For` est un en-tête, et **n'importe qui** peut l'écrire. Si l'API était joignable sans passer par le proxy, un attaquant changerait d'adresse à chaque essai en changeant l'en-tête, exactement comme le fait ce test, et ne serait jamais limité. `trust proxy` ne va donc qu'avec une API que **seul** le proxy peut joindre : c'est le rôle du `127.0.0.1:3000:3000` ci-dessus.
+
+<Exercices partie={10} de={13} a={15}>
+
+<Exercice numero="10.13" titre="La CI de ta marketplace">
+Depuis l'exercice 10.8, ta marketplace exige Redis : le workflow `.github/workflows/ci.yml` de ton dépôt d'exercices va échouer. Ajoute au job `exercices` un service `redis` (avec son healthcheck) et `REDIS_HOST: localhost`, puis, avant `npm test`, une étape `npm run build` et une étape qui exécute les migrations sur la base vide. Passe les actions en `v7` (`actions/checkout`, `actions/setup-node`) et vérifie le fichier avec actionlint. Pousse, et vérifie dans l'onglet **Actions** que le job passe et que l'avertissement sur Node.js 20 a disparu. Ajoute enfin, exprès, une faute dans une migration (un nom de table inexistant) : quelle étape échoue, avec quel message ?
+</Exercice>
+
+<Exercice numero="10.14" titre="Publier l'image">
+Ajoute le job `image` à ton workflow, avec `needs` sur le job de tests. Après un push sur `main`, retrouve le paquet dans l'onglet **Packages** de ton profil GitHub, avec deux étiquettes : `latest` et `sha-` suivi de sept caractères, qui doivent correspondre à ton dernier commit (`git rev-parse --short HEAD`). Télécharge l'image sur ta machine avec `docker pull ghcr.io/<ton-compte>/<ton-depot>:latest` (précédé de `docker login ghcr.io` si le paquet est privé), et vérifie que `docker run --rm <image> id` affiche `uid=1000(node)`. Ouvre une pull request : le job `image` ne doit pas s'exécuter.
+</Exercice>
+
+<Exercice numero="10.15" titre="Une répétition de déploiement">
+Écris `compose.prod.yaml` pour ta marketplace : l'image de l'exercice 10.14, ni `ports` pour la base ni pour Redis, l'API sur `127.0.0.1:3000`, `stop_grace_period: 30s`. Lance-le avec un fichier de valeurs propres à la production (`docker compose -f compose.prod.yaml --env-file production.env pull`, puis `up -d`) : `curl http://127.0.0.1:3000/sante/pret` doit répondre `200`, et `docker compose -f compose.prod.yaml ps` ne doit montrer aucun port publié pour `db` et `redis`. Ajoute `trust proxy` à `configurerApp` et `test/proxy.e2e-spec.ts` : cinq connexions ratées depuis `203.0.113.1`, une sixième refusée en `429`, et une connexion ratée depuis `203.0.113.2` qui reçoit `401`. Vérifie que ce dernier test échoue sans `trust proxy`.
+</Exercice>
+
+</Exercices>

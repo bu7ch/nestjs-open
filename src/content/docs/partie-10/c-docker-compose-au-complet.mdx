@@ -1,0 +1,306 @@
+---
+title: "c · Docker Compose au complet"
+description: "L'API, PostgreSQL, Redis et les migrations, démarrés dans le bon ordre par une seule commande."
+projet: loup-garou
+duree: 60
+prerequis: Section b ; partie 7, section f (la limitation de débit).
+exercices: 3
+sidebar:
+  order: 3
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Ton `docker-compose.yml` de la partie 5 ne lance qu'un service : la base. L'API tourne à côté, avec `npm run start:dev`. En production, tout doit démarrer ensemble, dans le bon ordre : la base d'abord, puis les migrations, puis l'API, et seulement quand ce dont elle dépend est **prêt**. On complète le fichier avec trois services : Redis, les migrations et l'API elle-même.
+
+## Pourquoi Redis
+
+**Redis** est une base de données qui garde tout en mémoire : très rapide, pratique pour des données de courte durée. La partie 7 a laissé une limite en suspens : les compteurs de la limitation de débit vivent **dans la mémoire de l'application**. Deux conséquences, qu'on vient de rendre bien réelles avec Docker :
+
+- à chaque redémarrage du conteneur (un déploiement, un plantage), les compteurs repartent à zéro, et l'attaquant qui en était à sa cinquième tentative retrouve cinq essais ;
+- avec deux instances de l'API, chacune compte de son côté.
+
+Rangés dans Redis, les compteurs sont **partagés** et **survivent** aux redémarrages. La partie 11 s'en servira encore, pour les minuteurs des phases et le temps réel sur plusieurs instances.
+
+```bash
+npm install ioredis
+```
+
+Un module rend le client Redis injectable partout, et le ferme proprement à l'arrêt de l'application :
+
+```ts title="src/redis/redis.module.ts" {13,16,26}
+import { Global, Inject, Logger, Module, OnApplicationShutdown } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Redis } from 'ioredis';
+
+export const REDIS = 'REDIS';
+
+@Global()
+@Module({
+	providers: [
+		{
+			provide: REDIS,
+			inject: [ConfigService],
+			useFactory: (config: ConfigService) => {
+				const redis = new Redis({ host: config.get('REDIS_HOST'), port: config.get('REDIS_PORT'), maxRetriesPerRequest: 1 });
+				const logger = new Logger('Redis');
+				redis.on('error', (erreur: NodeJS.ErrnoException) => logger.warn(`Redis injoignable (${erreur.code ?? erreur.message})`));
+				return redis;
+			},
+		},
+	],
+	exports: [REDIS],
+})
+export class RedisModule implements OnApplicationShutdown {
+	constructor(@Inject(REDIS) private readonly redis: Redis) {}
+
+	async onApplicationShutdown() {
+		await this.redis.quit();
+	}
+}
+```
+
+- Ligne 13 : un **provider fabriqué par une fonction** (`useFactory`), comme la connexion TypeORM de la partie 5. Le jeton `REDIS` sert à l'injecter : `@Inject(REDIS)`. `@Global()` évite de réimporter le module partout. `maxRetriesPerRequest: 1` fait échouer une commande après un seul nouvel essai quand Redis est injoignable, au lieu de la faire attendre longtemps.
+- Ligne 16 : sans écouteur `'error'`, `ioredis` écrit `[ioredis] Unhandled error event` directement dans la console, hors du journal de NestJS. Il se reconnecte tout seul : on le signale, sans plus.
+- Ligne 26 : fermer la connexion à l'arrêt. On y revient en section d.
+
+Ajoute `REDIS_HOST` (obligatoire, `@IsString()` et `@IsNotEmpty()`) et `REDIS_PORT` (`@IsNumber()`, `6379` par défaut) à la validation de la section a.
+
+### Les compteurs dans Redis
+
+Le paquet qu'on trouve d'abord pour brancher `@nestjs/throttler` sur Redis, `@nest-lab/throttler-storage-redis`, ne s'installe pas avec NestJS 12 :
+
+```text
+npm error Could not resolve dependency:
+npm error peer @nestjs/common@"^7.0.0 || ^8.0.0 || ^9.0.0 || ^10.0.0 || ^11.0.0" from @nest-lab/throttler-storage-redis@1.2.0
+```
+
+Il annonce ne fonctionner qu'avec NestJS 7 à 11. Forcer l'installation (`--force`) ferait taire npm sans rien garantir. Le stockage attendu par `@nestjs/throttler` tient en une méthode : on l'écrit.
+
+```ts title="src/redis/redis-throttler.storage.ts" {7,9}
+import type { ThrottlerStorage } from '@nestjs/throttler';
+import { Redis } from 'ioredis';
+
+export class RedisThrottlerStorage implements ThrottlerStorage {
+	constructor(private readonly redis: Redis) {}
+
+	async increment(cle: string, ttl: number, limite: number, _blocage: number, nom: string) {
+		const k = `limite:${nom}:${cle}`;
+		const resultats = await this.redis.multi().incr(k).pexpire(k, ttl, 'NX').pttl(k).exec();
+		const total = Number(resultats?.[0]?.[1]);
+		const resteMs = Number(resultats?.[2]?.[1]);
+		const resteS = Math.ceil(resteMs / 1000);
+		const bloque = total > limite;
+		return { totalHits: total, timeToExpire: resteS, isBlocked: bloque, timeToBlockExpire: bloque ? resteS : 0 };
+	}
+}
+```
+
+- Ligne 7 : `cle` identifie le client et la route (le throttler la calcule à partir de l'adresse IP), `nom` est le nom de la limite (`default`).
+- Ligne 9 : trois commandes envoyées **ensemble** (`multi`) : `INCR` ajoute 1 au compteur (et le crée à 1 s'il n'existe pas), `PEXPIRE … NX` lui donne une durée de vie de `ttl` millisecondes **seulement s'il n'en a pas encore** (au premier appel de la fenêtre), et `PTTL` lit le temps qui lui reste. Quand la durée expire, Redis efface le compteur tout seul : la fenêtre suivante repart de zéro.
+
+On le branche dans la configuration du throttler de la partie 7 :
+
+```ts title="src/app.module.ts" {3,4,7}
+RedisModule,
+ThrottlerModule.forRootAsync({
+	inject: [REDIS],
+	useFactory: (redis: Redis) => ({
+		throttlers: [{ ttl: 60_000, limit: 100 }],
+		skipIf: () => process.env.THROTTLE_ACTIF === 'false',
+		storage: new RedisThrottlerStorage(redis),
+	}),
+}),
+```
+
+Les tests de bout en bout ont maintenant besoin d'un Redis (`REDIS_HOST=localhost` dans `.env.test`), et d'une précaution : les compteurs survivent **aussi** d'un lancement des tests à l'autre. Lance deux fois de suite, à moins d'une minute d'écart, un test qui réactive la limitation (celui des abus de la partie 7) : la seconde fois, il échoue avec `expected 401 "Unauthorized", got 429 "Too Many Requests"`, car les tentatives de la fois précédente comptent encore. Vide Redis avant chaque test qui réactive la limitation :
+
+```ts
+beforeEach(async () => {
+	await app.get<Redis>(REDIS).flushdb();
+});
+```
+
+## Le fichier complet
+
+```yaml title="docker-compose.yml" {1-6,20,37,41,53-59,61}
+x-connexion-base: &connexion-base
+  DB_HOST: db
+  DB_PORT: 5432
+  DB_USER: ${DB_USER:?DB_USER manquant dans .env}
+  DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD manquant dans .env}
+  DB_NAME: ${DB_NAME:?DB_NAME manquant dans .env}
+
+services:
+  db:
+    image: docker.io/library/postgres:16
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "5432:5432"
+    volumes:
+      - donnees-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrations:
+    build: .
+    command: ["node_modules/.bin/typeorm", "migration:run", "-d", "dist/data-source.js"]
+    environment: *connexion-base
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      <<: *connexion-base
+      NODE_ENV: production
+      NOMBRE_MAX_VILLAGES: ${NOMBRE_MAX_VILLAGES:?NOMBRE_MAX_VILLAGES manquant dans .env}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET manquant dans .env}
+      REDIS_HOST: redis
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/sante/pret').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  donnees-postgres:
+```
+
+Il y a beaucoup de nouveautés : prenons-les dans l'ordre.
+
+### Les variables : le .env, lu par Compose
+
+`${DB_USER}` n'est pas une valeur, c'est une **substitution** : au lancement, `docker compose` la remplace par la variable du même nom, qu'il cherche dans ton shell, puis dans un fichier `.env` placé à côté de `docker-compose.yml`. C'est le `.env` de ton projet, celui de la partie 4 : il contient déjà `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `NOMBRE_MAX_VILLAGES` et `JWT_SECRET`. Sur un serveur, ce fichier contiendra les valeurs de production, et ne quittera jamais ce serveur.
+
+`${DB_USER:?message}` rend la variable **obligatoire**. Sans elle, Compose refuse de faire quoi que ce soit :
+
+```text
+error while interpolating x-connexion-base.DB_USER: required variable DB_USER is missing a value: DB_USER manquant dans .env
+```
+
+Mieux vaut cet arrêt immédiat qu'une API lancée avec un mot de passe vide. Pour utiliser un autre fichier que `.env`, par exemple les valeurs de production sur ta machine : `docker compose --env-file production.env up -d`.
+
+Les lignes 1 à 6 définissent un **bloc réutilisable** (une ancre YAML, `&connexion-base`), pour ne pas écrire deux fois les paramètres de connexion : `*connexion-base` le reprend tel quel pour les migrations, et `<<: *connexion-base` le fusionne avec les variables propres à l'API. Un nom qui commence par `x-` est ignoré par Compose : c'est l'emplacement prévu pour ces blocs.
+
+Remarque `DB_HOST: db` : dans un conteneur, `localhost` désigne **le conteneur lui-même**, pas ta machine. Pour joindre la base, l'API utilise le **nom du service**.
+
+### Le réseau
+
+Compose crée un **réseau** privé pour le projet et y branche tous les services, chacun joignable par son nom : `db`, `redis`, `api`. C'est pour ça que `DB_HOST: db` et `REDIS_HOST: redis` fonctionnent, sans connaître aucune adresse IP. Quand on a arrêté la base pendant nos essais, l'API a signalé `getaddrinfo ENOTFOUND db` : le nom `db` n'existait plus sur le réseau.
+
+`ports` publie un port **sur ta machine** : `"3000:3000"` rend l'API accessible sur `http://localhost:3000`. Les ports de la base et de Redis ne sont publiés ici que pour ton développement (`npm run start:dev` et les tests les utilisent depuis ta machine). L'API, elle, passe par le réseau privé : sur un serveur, on ne les publiera pas (section e).
+
+### Démarrer dans le bon ordre
+
+`depends_on` seul attend que le conteneur de la base soit **lancé**, pas que PostgreSQL accepte des connexions, ce qui prend quelques secondes de plus. D'où les **healthchecks** : une commande que Docker exécute à intervalles réguliers dans le conteneur, pour savoir s'il va bien.
+
+- `pg_isready` (fourni par l'image PostgreSQL) répond si la base accepte les connexions. Le `$$` est un `$` échappé : sans lui, Compose chercherait une variable `POSTGRES_USER` dans ton `.env` au lieu de laisser le conteneur la lire.
+- `redis-cli ping` répond `PONG`.
+- Pour l'API, on appelle sa route de santé avec `fetch`, déjà présent dans Node : l'image Alpine n'a pas `curl`. La route `/sante/pret` arrive en section d.
+
+Et `condition` précise ce qu'on attend :
+
+| Condition | Attend que… |
+|---|---|
+| `service_started` (par défaut) | le conteneur soit lancé |
+| `service_healthy` | son healthcheck réussisse |
+| `service_completed_successfully` | le conteneur se soit **terminé** avec le code `0` |
+
+La dernière est faite pour les migrations : un conteneur qui les exécute, puis s'arrête. Si une migration échoue, le code de sortie n'est pas `0`, et l'API ne démarre pas sur un schéma incomplet.
+
+`restart: unless-stopped` relance l'API si elle s'arrête d'elle-même (un plantage), sauf si c'est toi qui l'as arrêtée.
+
+### Les deux services construits
+
+`migrations` et `api` ont chacun `build: .` : Compose construit l'image du Dockerfile de la section b. La seconde construction reprend toutes les couches de la première depuis le cache. On pourrait être tenté de construire une seule image nommée (`image: loupgarou-api`) et de la réutiliser dans `migrations` : au premier lancement, Compose essaie alors de **télécharger** cette image avant de la construire, et affiche `pull access denied for loupgarou-api, repository does not exist`, avant de la construire quand même. Deux `build: .` évitent ce bruit.
+
+## Lancer
+
+```bash
+docker compose up -d --build
+docker compose ps -a --format 'table {{.Name}}\t{{.Status}}'
+```
+
+```text
+NAME                     STATUS
+loupgarou-api-1          Up 14 seconds (healthy)
+loupgarou-db-1           Up 20 seconds (healthy)
+loupgarou-migrations-1   Exited (0) 14 seconds ago
+loupgarou-redis-1        Up 20 seconds (healthy)
+```
+
+`--build` reconstruit les images si le code a changé. Le préfixe `loupgarou-` est le nom du dossier du projet (ici `loupgarou`). Les migrations se sont exécutées puis arrêtées avec le code `0`, et l'API est `healthy`. Au lancement suivant, les migrations disent simplement `No migrations are pending`.
+
+`docker compose logs api` affiche les journaux de l'API, `docker compose down` arrête et supprime les conteneurs (les données restent dans le volume), et `docker compose down -v` supprime aussi le volume, donc la base.
+
+Pendant que tu développes, tu n'as pas besoin de l'API en conteneur : `docker compose up -d db redis` ne lance que ces deux services, et `npm run start:dev` fonctionne comme avant.
+
+### La preuve pour Redis
+
+Cinq mauvaises connexions, un redémarrage de l'API, puis une sixième :
+
+```bash
+docker compose restart api
+```
+
+```text
+{"statusCode":429,"message":"ThrottlerException: Too Many Requests",…}
+```
+
+La sixième tentative est refusée alors que l'API vient de redémarrer : le compteur était dans Redis. `docker compose exec redis redis-cli keys '*'` montre les clés `limite:default:…`.
+
+Une décision à connaître : si Redis tombe, le throttler ne peut plus compter, et **toutes** les routes qu'il protège répondent `500`. On l'a vérifié en arrêtant Redis. C'est un choix : refuser plutôt que laisser passer sans limite. La route de santé, elle, ne doit pas en dépendre, on le règle en section d.
+
+:::note[Avec Podman]
+Le fichier est le même. Remplace `docker compose` par `podman compose` (partie 5, section a). Ce projet a été vérifié avec Docker uniquement : la syntaxe des healthchecks et des conditions `depends_on` fait partie de la spécification Compose, mais c'est l'outil compose installé avec Podman qui les applique ; vérifie avec `podman compose ps` que tes services passent bien à `healthy`.
+:::
+
+:::caution[Deux heures d'écart]
+Le même code n'affiche pas la même heure partout. La colonne `creeLe` d'un village (`@CreateDateColumn()`) est de type `timestamp without time zone` : elle ne dit pas dans quel fuseau elle est écrite. PostgreSQL y écrit l'heure UTC ; lue par Node dans le conteneur (fuseau UTC), elle est juste, mais lue par ton API lancée sur une machine réglée à l'heure de Paris, elle est décalée de deux heures en été (`11:07Z` au lieu de `13:07Z`). Le type `timestamptz` (`@CreateDateColumn({ type: 'timestamptz' })`, avec sa migration) enregistre le fuseau, et donne la même heure partout.
+:::
+
+<Exercices partie={10} de={7} a={9}>
+
+<Exercice numero="10.7" titre="Toute la marketplace en une commande">
+Complète le `compose.yaml` du dépôt d'exercices avec les services `redis`, `migrations` et `api` de la section, adaptés à la marketplace (`NOMBRE_MAX_PRODUITS`, `JWT_REFRESH_SECRET`), avec l'image de l'exercice 10.4 et le `data-source.ts` corrigé à l'exercice 10.3, en gardant le volume `docker/initdb` qui crée `marketplace_test`. Lance `docker compose up -d --build` : `docker compose ps -a` doit montrer `api` en `healthy` (la route `/sante` de l'exercice 8.6 suffit pour l'instant : remplace `/sante/pret` par `/sante` dans le healthcheck, tu y reviendras à l'exercice 10.10) et `migrations` en `Exited (0)`. Vérifie avec `docker compose exec db psql -U marketplace -d marketplace -c '\dt'` que les tables existent, et qu'un second `up -d` affiche `No migrations are pending` dans `docker compose logs migrations`.
+</Exercice>
+
+<Exercice numero="10.8" titre="Le compteur partagé">
+Ajoute `RedisModule`, `RedisThrottlerStorage`, et `REDIS_HOST` / `REDIS_PORT` à ta validation d'environnement (et à `.env.test`). Ajoute `await app.get<Redis>(REDIS).flushdb()` avant chaque test de ton fichier des abus (exercice 7.18) : sans cette ligne, lance-le deux fois de suite et note le statut reçu à la première tentative. Puis, avec Compose : cinq mauvaises connexions (`401`), `docker compose restart api`, et une sixième qui doit répondre `429`.
+</Exercice>
+
+<Exercice numero="10.9" titre="Casser, exprès">
+Trois pannes, trois observations à noter. Lance `docker compose up -d` en retirant `JWT_SECRET` de ton `.env` : quel message, et quel service a démarré ? Remets-le, puis `docker compose kill db` : au bout de combien de temps `docker compose ps` affiche-t-il l'API en `unhealthy`, et est-elle redémarrée ? `docker compose start db` : redevient-elle `healthy` toute seule ? Enfin, crée une commande depuis l'API en conteneur, relis sa `dateCommande` (exercice 5.12, `@CreateDateColumn()`) depuis `npm run start:dev` sur ta machine : y a-t-il un écart, et d'où vient-il ?
+</Exercice>
+
+</Exercices>

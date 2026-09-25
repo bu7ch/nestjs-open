@@ -1,0 +1,264 @@
+---
+title: "e · Webhooks et idempotence"
+description: "Recevoir un événement envoyé par un autre service : vérifier sa signature sur le corps brut, refuser les rejeux, et ne le traiter qu'une fois, même livré trois fois en même temps."
+projet: loup-garou
+duree: 60
+prerequis: Partie 7 (routes publiques) ; partie 8 (filtre d'exceptions) ; section d (files de tâches, pour la fin).
+exercices: 3
+bonus: true
+sidebar:
+  order: 5
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Le Loup-Garou propose un **pass premium** : 30 jours de parties sans limite. Le paiement se fait chez un prestataire de paiement, pas chez nous : on ne touche jamais à une carte bancaire. Mais il faut bien apprendre que le joueur a payé. Le prestataire nous le dit en appelant **notre** API : c'est un **webhook**. Une route ordinaire, sauf que l'appelant n'est pas un joueur, c'est un autre service.
+
+Trois problèmes se posent aussitôt :
+
+- la route est publique, donc **n'importe qui** peut l'appeler et s'offrir un pass en envoyant un faux « paiement réussi » ;
+- quelqu'un qui a intercepté un vrai message peut le **rejouer** plus tard ;
+- le prestataire, lui, peut livrer **plusieurs fois** le même événement : s'il n'a pas reçu notre réponse, il réessaie. Et il le fera : c'est ce qu'on attend d'un service fiable.
+
+On prend l'exemple du format de **Stripe**, un prestataire de paiement très utilisé, et de son SDK (le kit de développement officiel, ici le paquet npm `stripe`). Tout ce qui suit fonctionne **hors ligne**, sans compte Stripe, sans clé d'API, sans rien payer : le SDK sait vérifier une signature, et en fabriquer une pour les tests.
+
+## Une signature sur le corps
+
+Le prestataire et toi partagez un **secret**, que tu recopies dans `WEBHOOK_SECRET` (dans `.env`, et une valeur factice dans `.env.test`). À chaque envoi, il ajoute un en-tête :
+
+```text
+Stripe-Signature: t=1790342488,v1=640cac578db958adbeb4d7913043d3678c485a6f7299384a7f3aa6cd16b212aa
+```
+
+`t` est l'heure d'envoi (en secondes depuis 1970) et `v1` une **signature HMAC-SHA256** : une empreinte calculée à partir du secret, de `t` et du corps de la requête, **octet par octet**. Sans le secret, impossible de fabriquer une empreinte valable ; et changer un seul caractère du corps change toute l'empreinte. Voici le calcul, pour comprendre ce que fait le SDK (on a vérifié qu'il trouve la même valeur) :
+
+```ts
+import { createHmac } from 'node:crypto';
+
+const attendue = createHmac('sha256', secret).update(`${t}.${corpsBrut}`).digest('hex');
+```
+
+Tu n'as pas à l'écrire toi-même : le SDK fait ce calcul, le compare à l'en-tête, et vérifie l'heure.
+
+```bash
+npm install stripe
+```
+
+## Le corps brut
+
+« Octet par octet » : c'est là que tout se joue. NestJS lit le JSON de la requête et le transforme en objet **avant** ta route. Il faut donc lui demander de garder aussi le corps d'origine, avec l'option `rawBody`, à la création de l'application :
+
+```ts title="src/main.ts" {1}
+const app = await NestFactory.create(AppModule, { rawBody: true });
+configurerApp(app);
+await app.listen(process.env.PORT ?? 3000);
+```
+
+Cette option ne peut pas aller dans `configurerApp` : elle se donne **à la création**, et `configurerApp` reçoit une application déjà créée. Les tests doivent donc la répéter : `module.createNestApplication({ rawBody: true })`. Sinon, le test qui envoie un webhook correctement signé reçoit `expected 200 "OK", got 400 "Bad Request"`.
+
+## La route
+
+```ts title="src/webhooks/webhooks.controller.ts" {15,17,18,21,23}
+import { BadRequestException, Controller, Headers, HttpCode, Post, Req, type RawBodyRequest } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { Request } from 'express';
+import Stripe from 'stripe';
+import { Public } from '../auth/public.decorator.js';
+import { WebhooksService, type EvenementDePaiement } from './webhooks.service.js';
+
+@Controller('api/webhooks')
+export class WebhooksController {
+	constructor(
+		private readonly webhooks: WebhooksService,
+		private readonly config: ConfigService,
+	) {}
+
+	@Public()
+	@Post('paiements')
+	@HttpCode(200)
+	recevoir(@Req() requete: RawBodyRequest<Request>, @Headers('stripe-signature') signature: string | undefined) {
+		let evenement: EvenementDePaiement;
+		try {
+			evenement = Stripe.webhooks.constructEvent(requete.rawBody as Buffer, signature ?? '', this.config.getOrThrow('WEBHOOK_SECRET')) as unknown as EvenementDePaiement;
+		} catch (erreur) {
+			throw new BadRequestException(`Signature refusée : ${(erreur as Error).message}`);
+		}
+		return this.webhooks.traiter(evenement);
+	}
+}
+```
+
+- Ligne 15 : le prestataire n'a pas de jeton JWT : la route est publique pour l'`AuthGuard` de la partie 7. C'est la signature qui la protège.
+- Ligne 17 : un `POST` répond `201` par défaut ; un webhook attend simplement un `2xx`, et `200` dit « bien reçu ».
+- Ligne 18 : `RawBodyRequest<Request>` est la requête Express avec, en plus, `rawBody` : le corps d'origine, en `Buffer` (une suite d'octets).
+- Ligne 21 : `Stripe.webhooks` s'utilise **sans** créer de client Stripe. `new Stripe('')` aurait d'ailleurs refusé : `Neither apiKey nor config.authenticator provided`. `constructEvent` vérifie la signature et l'heure, puis renvoie l'événement lu dans le corps.
+- Ligne 23 : toute signature refusée donne un `400`, avec la raison du SDK. Ton filtre de la partie 8 lui donne le format habituel.
+
+Voici ce qu'on a obtenu en essayant chaque erreur possible :
+
+| Ce qui arrive à `constructEvent` | Message |
+|---|---|
+| `rawBody` absent (application créée sans l'option) | `No webhook payload was provided.` |
+| l'objet déjà lu par NestJS (`requete.body`) | `Webhook payload must be provided as a string or a Buffer […] Payload was provided as a parsed JavaScript object instead.` |
+| `JSON.stringify(requete.body)` | `No signatures found matching the expected signature for payload. […]` |
+| un corps modifié, ou un mauvais secret | `No signatures found matching the expected signature for payload. […]` |
+| pas d'en-tête `Stripe-Signature` | `No stripe-signature header value was provided.` |
+| une signature d'il y a 10 minutes | `Timestamp outside the tolerance zone` |
+
+La troisième ligne est un piège qui fait perdre du temps. « Je n'ai qu'à refaire le JSON à partir de l'objet » : on l'a essayé, et ça marche… tant que le corps envoyé n'a pas d'espace. `{"id":"evt_9",…}` passe, mais `{ "id": "evt_9", … }`, le même JSON écrit avec des espaces, est refusé : `JSON.stringify` ne remet pas les espaces, et l'empreinte ne correspond plus. Seul le corps brut est sûr.
+
+La dernière ligne te protège du **rejeu** : un message intercepté et renvoyé plus tard porte son ancienne heure `t`, qui fait partie de ce qui est signé. On ne peut pas la changer sans casser la signature, et le SDK refuse une heure trop ancienne : une signature de 10 minutes, dans notre essai.
+
+## Ne traiter qu'une fois
+
+La signature dit « ce message vient bien du prestataire ». Elle ne dit pas « c'est la première fois qu'on le reçoit ». Il faut que le traitement soit **idempotent**, comme les jobs de la section d : le recevoir une fois de plus ne doit rien changer. Chaque événement a un identifiant unique (`evt_…`) : on le **note en base**, et on refuse ce qu'on a déjà vu.
+
+```ts title="src/webhooks/evenement-recu.entity.ts"
+@Entity('evenements_recus')
+export class EvenementRecu {
+	@PrimaryColumn()
+	id: string;
+
+	@Column()
+	type: string;
+
+	@CreateDateColumn()
+	recuLe: Date;
+}
+```
+
+L'identifiant est la **clé primaire** : PostgreSQL refusera lui-même un second enregistrement avec le même, même si deux requêtes arrivent à la même milliseconde.
+
+Le pass, lui, se compte dans une nouvelle colonne de `Utilisateur`, `@Column({ default: 0 }) joursPremium: number;`, ajoutée avec sa migration (partie 5).
+
+```ts title="src/webhooks/webhooks.service.ts" {20,21,22,27}
+import { Injectable, Logger } from '@nestjs/common';
+import { DataSource, EntityManager, QueryFailedError } from 'typeorm';
+import { Utilisateur } from '../utilisateurs/utilisateur.entity.js';
+import { EvenementRecu } from './evenement-recu.entity.js';
+
+export interface EvenementDePaiement {
+	id: string;
+	type: string;
+	data: { object: { utilisateurId?: number; jours?: number } };
+}
+
+@Injectable()
+export class WebhooksService {
+	private readonly logger = new Logger('Webhooks');
+
+	constructor(private readonly dataSource: DataSource) {}
+
+	async traiter(evenement: EvenementDePaiement): Promise<{ doublon: boolean }> {
+		try {
+			return await this.dataSource.transaction(async (base) => {
+				await base.insert(EvenementRecu, { id: evenement.id, type: evenement.type });
+				if (evenement.type === 'pass_premium.achete') await this.crediter(base, evenement.data.object);
+				else this.logger.log(`Événement ignoré : ${evenement.type}`);
+				return { doublon: false };
+			});
+		} catch (erreur) {
+			if (erreur instanceof QueryFailedError && (erreur.driverError as { code?: string }).code === '23505') return { doublon: true };
+			throw erreur;
+		}
+	}
+
+	async crediter(base: EntityManager, { utilisateurId, jours }: { utilisateurId?: number; jours?: number }) {
+		await base.increment(Utilisateur, { id: utilisateurId }, 'joursPremium', jours ?? 0);
+	}
+}
+```
+
+- Ligne 20 : une **transaction**, une notion nouvelle. C'est un groupe d'écritures que la base traite comme une seule : soit toutes réussissent, soit aucune n'est gardée. `dataSource.transaction` ouvre la transaction, te donne `base` pour écrire dedans, la valide si ta fonction se termine normalement, et l'**annule** entièrement si elle lève une exception.
+- Ligne 21 : on enregistre l'événement **en premier**. Si un autre traitement du même événement est en cours, PostgreSQL fait attendre celui-ci, puis le refuse avec le code `23505`, celui des doublons (partie 8).
+- Ligne 22 : l'effet, ici ajouter 30 jours au compteur `joursPremium` de l'utilisateur. Un type d'événement qu'on ne connaît pas est noté et ignoré : un prestataire peut envoyer d'autres types que ceux dont on se sert.
+- Ligne 27 : un doublon n'est **pas** une erreur. On répond `200` avec `{ doublon: true }`. Si on répondait une erreur, le prestataire croirait l'envoi raté et réessaierait, encore et encore.
+
+Et si le crédit échoue (la base a un souci), l'exception remonte, la transaction **annule aussi** l'enregistrement de l'événement, et la route répond `500`. Le prestataire réessaiera, et cette fois l'événement sera traité : il n'a jamais été marqué comme vu.
+
+### Pourquoi pas « chercher, puis écrire »
+
+L'idée qui vient en premier : `findOneBy` pour voir si l'événement est connu, puis créditer, puis enregistrer l'événement. On l'a essayée, avec trois livraisons **simultanées** du même événement, cinq fois de suite. Quatre fois sur cinq, les trois requêtes ont vu « pas encore traité » en même temps, et le joueur a reçu **90 jours** au lieu de 30, avec deux réponses `500` (les enregistrements refusés, **après** le crédit). Avec la version ci-dessus, le même essai donne toujours 30 jours et trois `200`.
+
+## Tester, sans compte Stripe
+
+`generateTestHeaderString` fabrique l'en-tête qu'enverrait le prestataire, avec le même secret que l'application (celui de l'environnement de test). On envoie le corps **en texte**, pour qu'il arrive exactement tel quel :
+
+```ts title="test/webhooks.e2e-spec.ts"
+const SECRET = process.env.WEBHOOK_SECRET!;
+
+const achat = (id: string, utilisateurId: number) =>
+	JSON.stringify({ id, type: 'pass_premium.achete', data: { object: { utilisateurId, jours: 30 } } });
+const livrer = (corps: string, signature = Stripe.webhooks.generateTestHeaderString({ payload: corps, secret: SECRET })) =>
+	request(app.getHttpServer()).post('/api/webhooks/paiements').set('Content-Type', 'application/json').set('Stripe-Signature', signature).send(corps);
+const joursDe = async (id: number) => (await dataSource.query('SELECT "joursPremium" FROM utilisateurs WHERE id = $1', [id]))[0].joursPremium;
+
+it('accepte un événement signé et crédite le joueur', async () => {
+	const alice = await o.creerJoueur('Alice');
+	const reponse = await livrer(achat('evt_1', alice.id)).expect(200);
+	expect(reponse.body).toEqual({ doublon: false });
+	expect(await joursDe(alice.id)).toBe(30);
+});
+
+it('refuse une signature fausse, absente, ou un corps modifié', async () => {
+	const alice = await o.creerJoueur('Alice');
+	const corps = achat('evt_1', alice.id);
+	const faux = await livrer(corps, 't=123,v1=abc').expect(400);
+	expect(faux.body.message).toContain('No signatures found matching the expected signature');
+	const absente = await request(app.getHttpServer()).post('/api/webhooks/paiements').set('Content-Type', 'application/json').send(corps).expect(400);
+	expect(absente.body.message).toBe('Signature refusée : No stripe-signature header value was provided.');
+	const signature = Stripe.webhooks.generateTestHeaderString({ payload: corps, secret: SECRET });
+	await livrer(corps.replace('"jours":30', '"jours":3000'), signature).expect(400);
+	expect(await joursDe(alice.id)).toBe(0);
+});
+
+it('refuse une livraison trop vieille (rejeu d\'un attaquant)', async () => {
+	const alice = await o.creerJoueur('Alice');
+	const corps = achat('evt_1', alice.id);
+	const vieille = Stripe.webhooks.generateTestHeaderString({ payload: corps, secret: SECRET, timestamp: Math.floor(Date.now() / 1000) - 600 });
+	const reponse = await livrer(corps, vieille).expect(400);
+	expect(reponse.body.message).toBe('Signature refusée : Timestamp outside the tolerance zone');
+});
+
+it('deux livraisons simultanées ne créditent qu\'une fois', async () => {
+	const alice = await o.creerJoueur('Alice');
+	const corps = achat('evt_1', alice.id);
+	const reponses = await Promise.all([livrer(corps), livrer(corps), livrer(corps)]);
+	expect(reponses.map((r) => r.status)).toEqual([200, 200, 200]);
+	expect(reponses.filter((r) => r.body.doublon === false)).toHaveLength(1);
+	expect(await joursDe(alice.id)).toBe(30);
+});
+
+it('après une panne pendant le traitement, la livraison suivante est traitée', async () => {
+	const alice = await o.creerJoueur('Alice');
+	vi.spyOn(app.get(WebhooksService), 'crediter').mockRejectedValueOnce(new Error('panne'));
+	await livrer(achat('evt_1', alice.id)).expect(500);
+	expect(await joursDe(alice.id)).toBe(0);
+	const [{ total }] = await dataSource.query('SELECT count(*)::int AS total FROM evenements_recus');
+	expect(total).toBe(0);
+
+	await livrer(achat('evt_1', alice.id)).expect(200);
+	expect(await joursDe(alice.id)).toBe(30);
+});
+```
+
+Le `beforeEach` ajoute `evenements_recus` à son `TRUNCATE`, et un `afterEach` appelle `vi.restoreAllMocks()` (le piège de l'exercice 8.16). Le test « corps modifié » garde la signature d'origine et change `30` en `3000` : c'est exactement l'attaque que la signature arrête. Le dernier test simule la panne en faisant échouer `crediter` une seule fois (`mockRejectedValueOnce`) : la transaction annule tout, et la livraison suivante crédite normalement. Le test « simultanées » est celui qui a fait tomber la version « chercher, puis écrire ».
+
+Un dernier conseil, que la section d rend possible : garde cette route **rapide**. Le prestataire n'attend que ton accusé de réception. Si le traitement est long (envoyer un e-mail de bienvenue, par exemple), enregistre l'événement, dépose un job dans une file, et réponds tout de suite.
+
+<Exercices partie={11} de={13} a={15}>
+
+<Exercice numero="11.13" titre="Le paiement d'une commande">
+Ajoute `POST /api/webhooks/paiements` à ta marketplace : route publique, `rawBody: true` dans `main.ts` **et** dans tes tests, vérification avec `Stripe.webhooks.constructEvent` et le secret `WEBHOOK_SECRET`. Un événement `paiement.reussi` avec `{ "data": { "object": { "commandeId": 12 } } }` passe la commande à `payee` avec `marquerPayee` (exercice 11.8), ce qui annule son expiration. Teste avec `generateTestHeaderString` (aucun compte Stripe n'est nécessaire) : un événement signé donne `200` et une commande `payee` ; une signature fausse, un en-tête absent, ou une signature d'il y a 10 minutes donnent `400`, et la commande reste `en_attente`. Retire `rawBody: true` de ton application de test et note le message obtenu.
+</Exercice>
+
+<Exercice numero="11.14" titre="Livré deux fois, payé une fois">
+Livre deux fois le même événement `paiement.reussi`, sans dédoublonnage : note le statut de la seconde réponse, et explique ce que ferait le prestataire en la recevant (indice : `transitionner` refuse `payee → payee`). Ajoute la table `evenements_recus` et la transaction de la section : la seconde livraison répond `200` avec `{ "doublon": true }`. Teste aussi trois livraisons **simultanées** avec `Promise.all` : trois `200`, un seul `doublon: false`, une seule ligne dans `evenements_recus`.
+</Exercice>
+
+<Exercice numero="11.15" titre="Panne, et événement inattendu">
+Simule une panne pendant le traitement (avec `vi.spyOn(…).mockRejectedValueOnce`) : la route répond `500`, la commande reste `en_attente`, `evenements_recus` est vide, et une nouvelle livraison du même événement passe la commande à `payee`. Puis envoie un `paiement.reussi` pour une commande qui n'existe pas : décide de la réponse (un `200` avec l'événement noté et ignoré, ou un `4xx`), écris le test correspondant, et justifie ton choix en une phrase en pensant à ce que fera le prestataire.
+</Exercice>
+
+</Exercices>

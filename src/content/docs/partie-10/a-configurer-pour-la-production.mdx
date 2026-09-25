@@ -1,0 +1,224 @@
+---
+title: "a · Configurer pour la production"
+description: "NODE_ENV, un environnement validé au démarrage, des secrets hors du code et de l'image."
+projet: loup-garou
+duree: 50
+prerequis: Partie 4, section d (la configuration) ; partie 6, section d (la base de test) ; partie 9, section a (Swagger).
+exercices: 3
+sidebar:
+  order: 1
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Sur ta machine, la configuration vient du `.env`, et les tests lisent `.env.test` (partie 6). En production, il n'y a **pas de fichier** : le serveur, ou le conteneur de la section b, reçoit ses réglages sous forme de **variables d'environnement**, posées par celui qui le lance. C'est la règle la plus répandue pour une application qu'on déploie : le même code, la même image, et seules les variables changent d'un environnement à l'autre.
+
+Ça pose trois questions. Comment l'application sait-elle dans quel environnement elle tourne ? Que se passe-t-il si une variable manque ? Et où ranger les secrets, puisqu'ils ne doivent être ni dans le code ni dans l'image ?
+
+## NODE_ENV : dans quel environnement suis-je ?
+
+`NODE_ENV` est une convention de l'écosystème Node : une variable qui vaut `development`, `test` ou `production`. Tu l'utilises déjà deux fois : Vitest la met à `test` (partie 6), et depuis la partie 9, Swagger n'est activé que si elle ne vaut pas `production`.
+
+Ce second usage cache un piège. `process.env.NODE_ENV !== 'production'` est vrai pour **toute autre valeur** : une faute de frappe (`prod`, `Production`) publie ta documentation en production, sans une erreur. La parade est la même qu'en partie 4 : **valider** la variable au démarrage, avec une liste fermée de valeurs.
+
+## Valider tout l'environnement
+
+La classe `VariablesEnvironnement` de la partie 4 ne vérifiait que `PORT`, `NOMBRE_MAX_VILLAGES` et, depuis la partie 7, `JWT_SECRET`. Les paramètres de la base, eux, n'étaient pas vérifiés : un `DB_HOST` oublié ne se voit qu'au moment où TypeORM essaie de se connecter. On complète :
+
+```ts title="src/config/variables-environnement.ts" {5,6,11-28,42-44}
+import { plainToInstance } from 'class-transformer';
+import { IsIn, IsNotEmpty, IsNumber, IsString, Min, MinLength, validateSync } from 'class-validator';
+
+class VariablesEnvironnement {
+	@IsIn(['development', 'production', 'test'])
+	NODE_ENV: string = 'development';
+
+	@IsNumber()
+	PORT: number = 3000;
+
+	@IsString()
+	@IsNotEmpty()
+	DB_HOST: string;
+
+	@IsNumber()
+	DB_PORT: number = 5432;
+
+	@IsString()
+	@IsNotEmpty()
+	DB_USER: string;
+
+	@IsString()
+	@IsNotEmpty()
+	DB_PASSWORD: string;
+
+	@IsString()
+	@IsNotEmpty()
+	DB_NAME: string;
+
+	@IsNumber()
+	@Min(1)
+	NOMBRE_MAX_VILLAGES: number;
+
+	@IsString()
+	@MinLength(32)
+	JWT_SECRET: string;
+}
+
+export function validerEnvironnement(config: Record<string, unknown>) {
+	const validees = plainToInstance(VariablesEnvironnement, config, { enableImplicitConversion: true });
+	const erreurs = validateSync(validees, { skipMissingProperties: false });
+	if (erreurs.length > 0) {
+		const detail = erreurs.map((e) => `${e.property} (${Object.keys(e.constraints ?? {}).join(', ')})`).join(', ');
+		throw new Error(`Variables d'environnement invalides : ${detail}`);
+	}
+	return validees;
+}
+```
+
+- Lignes 5 et 6 : `NODE_ENV` n'accepte que trois valeurs, et vaut `development` si elle est absente.
+- Lignes 11 à 28 : les paramètres de connexion à la base. `DB_PORT` a une valeur par défaut (le port standard de PostgreSQL), les autres sont obligatoires.
+- Lignes 42 à 44 : un message **lisible**. Avec `erreurs.toString()` de la partie 4, un environnement vide produisait un long texte qui répétait `An instance of VariablesEnvironnement has failed the validation` pour chaque variable. Ici, une seule ligne nomme toutes les variables fautives et la règle violée.
+
+Si tu as ajouté `JWT_REFRESH_SECRET` en partie 7, garde-le dans la classe : on ne l'a pas recopié ici pour raccourcir.
+
+Lancé sans aucune variable, en production, le serveur s'arrête tout de suite, avec le code de sortie `1` :
+
+```text
+Error: Variables d'environnement invalides : DB_HOST (isNotEmpty, isString), DB_USER (isNotEmpty, isString), DB_PASSWORD (isNotEmpty, isString), DB_NAME (isNotEmpty, isString), NOMBRE_MAX_VILLAGES (min, isNumber), JWT_SECRET (minLength, isString)
+```
+
+Et `NODE_ENV=prod` est refusé avec `NODE_ENV (isIn)`. C'est exactement ce qu'on veut : une application mal configurée doit **refuser de démarrer**, pas démarrer à moitié. Un orchestrateur (Docker Compose, en section c) voit tout de suite le conteneur échouer, au lieu de découvrir le problème à la première requête d'un joueur.
+
+### Tester la validation
+
+C'est une simple fonction : elle se teste sans NestJS, sans base, en une fraction de seconde.
+
+```ts title="src/config/variables-environnement.spec.ts" {1}
+import 'reflect-metadata';
+import { validerEnvironnement } from './variables-environnement.js';
+
+const complet = {
+	NODE_ENV: 'production',
+	DB_HOST: 'db',
+	DB_USER: 'loupgarou',
+	DB_PASSWORD: 'un-mot-de-passe',
+	DB_NAME: 'loupgarou',
+	NOMBRE_MAX_VILLAGES: '50',
+	JWT_SECRET: 'x'.repeat(32),
+};
+
+describe('validerEnvironnement', () => {
+	it('accepte un environnement complet, convertit les nombres et complète les valeurs par défaut', () => {
+		const config = validerEnvironnement(complet);
+		expect(config.NOMBRE_MAX_VILLAGES).toBe(50);
+		expect(config.PORT).toBe(3000);
+		expect(config.DB_PORT).toBe(5432);
+	});
+
+	it('refuse de démarrer sans DB_HOST, et le dit', () => {
+		const { DB_HOST, ...sansHote } = complet;
+		expect(() => validerEnvironnement(sansHote)).toThrow(/DB_HOST/);
+	});
+
+	it('refuse une faute de frappe dans NODE_ENV', () => {
+		expect(() => validerEnvironnement({ ...complet, NODE_ENV: 'prod' })).toThrow(/NODE_ENV \(isIn\)/);
+	});
+
+	it('refuse un secret JWT trop court', () => {
+		expect(() => validerEnvironnement({ ...complet, JWT_SECRET: 'court' })).toThrow(/JWT_SECRET \(minLength\)/);
+	});
+});
+```
+
+La ligne 1 n'est pas décorative. Sans elle, quatre tests échouent avec `Reflect.getMetadata is not a function`. `class-transformer` a besoin du paquet `reflect-metadata`, que NestJS charge pour toi dans l'application (c'est ce qui fait fonctionner les décorateurs, partie 1). Dans un test qui n'importe **rien** de NestJS, personne ne l'a chargé : on l'importe à la main.
+
+## Une configuration par environnement
+
+On a maintenant trois façons de fournir la configuration, une par environnement :
+
+| Environnement | `NODE_ENV` | D'où viennent les variables | La base |
+|---|---|---|---|
+| Ta machine | `development` (valeur par défaut) | le fichier `.env` | `loupgarou` |
+| Les tests | `test` (posée par Vitest) | `.env.test`, ou les variables de la CI (section e) | `loupgarou_test`, garde-fou `_test` |
+| La production | `production` | les variables d'environnement du conteneur | celle du serveur |
+
+`ConfigModule` gère très bien l'absence de fichier : le `envFilePath` de la partie 6 vise `.env`, qui n'existe pas dans le conteneur, et l'application démarre quand même avec les variables d'environnement. Une variable déjà présente dans l'environnement l'emporte d'ailleurs toujours sur celle du fichier.
+
+Un autre fichier, lui, ne le supporte pas : `src/data-source.ts`, celui des migrations (partie 5). Lancé sans `.env`, il échoue avant même de se connecter :
+
+```text
+Error: Unable to open file: "…/dist/data-source.js". ENOENT: no such file or directory, open '.env'
+```
+
+`process.loadEnvFile()` exige que le fichier existe. En production, il n'existera jamais : on ne le charge donc que s'il est là.
+
+```ts title="src/data-source.ts" {1,4}
+import { existsSync } from 'node:fs';
+import { DataSource } from 'typeorm';
+
+if (existsSync('.env')) process.loadEnvFile();
+
+export default new DataSource({
+	type: 'postgres',
+	host: process.env.DB_HOST,
+	port: Number(process.env.DB_PORT),
+	username: process.env.DB_USER,
+	password: process.env.DB_PASSWORD,
+	database: process.env.DB_NAME,
+	entities: ['dist/**/*.entity.js'],
+	migrations: ['dist/migrations/*.js'],
+});
+```
+
+## Les secrets : ni dans le dépôt, ni dans l'image
+
+Un **secret** est une valeur qui donne un pouvoir à celui qui la connaît : le mot de passe de la base, `JWT_SECRET` (avec lui, n'importe qui fabrique un jeton d'administrateur, partie 7). Trois règles :
+
+1. **Jamais dans le dépôt Git.** Vérifie que `.env` figure dans ton `.gitignore` (c'est le cas dans le dépôt d'exercices). Un secret poussé une fois reste dans l'historique, même supprimé ensuite : il faut le considérer comme publié, et le changer.
+2. **Jamais dans l'image Docker.** Une image se partage, se pousse sur un registre, se copie. On a essayé d'écrire `ENV JWT_SECRET=…` dans un Dockerfile : `docker image inspect` affiche la valeur en clair à qui a l'image, et `docker history` montre la ligne qui l'a posée. La section b veille aussi à ce que le `.env` ne soit jamais copié dans l'image.
+3. **Fournis au démarrage**, par celui qui lance l'application : le fichier `.env` du serveur lu par Docker Compose (section c), ou les secrets du dépôt GitHub dans la CI (section e).
+
+Et un secret de production est **différent** de celui de développement : si ton `.env` de développement fuit (une capture d'écran, un ordinateur volé), la production n'est pas touchée.
+
+## Le point d'entrée pour la production
+
+```ts title="src/main.ts" {10,11,12}
+import { ConfigService } from '@nestjs/config';
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module.js';
+import { configurerApp } from './configurer-app.js';
+import { configurerSwagger } from './configurer-swagger.js';
+
+async function bootstrap() {
+	const app = await NestFactory.create(AppModule);
+	configurerApp(app);
+	const production = process.env.NODE_ENV === 'production';
+	if (!production) configurerSwagger(app);
+	app.enableShutdownHooks();
+	const config = app.get(ConfigService);
+	await app.listen(config.get('PORT') ?? 3000);
+}
+await bootstrap();
+```
+
+- Lignes 10 et 11 : la politique de la partie 9, désormais sûre puisque `NODE_ENV` est validée. Avec `NODE_ENV=production`, `/docs` répond `404`.
+- Ligne 12 : `enableShutdownHooks()` demande à NestJS d'écouter les signaux d'arrêt que le système envoie à un programme (`SIGTERM`, `SIGINT`). Sans cette ligne, un `SIGTERM` tue le processus sur-le-champ, requêtes en cours comprises. La section d mesure la différence, et y ajoute les journaux JSON.
+
+Pour essayer le mode production sur ta machine, sans conteneur : `npm run build`, puis `NODE_ENV=production npm run start:prod`. Ton `.env` est lu comme d'habitude, seule `NODE_ENV` change.
+
+<Exercices partie={10} de={1} a={3}>
+
+<Exercice numero="10.1" titre="Valider tout l'environnement">
+Complète la validation de ta marketplace (partie 4, exercice 4.13, et partie 7) avec `NODE_ENV` (`development`, `production` ou `test`) et les cinq variables `DB_*`, et remplace `erreurs.toString()` par le message d'une ligne de la section. Écris `src/config/variables-environnement.spec.ts` : un environnement complet est accepté (et `NOMBRE_MAX_PRODUITS: '50'` devient le nombre `50`), un environnement sans `DB_HOST` lève une erreur qui contient `DB_HOST`, `NODE_ENV: 'prod'` est refusé avec `NODE_ENV (isIn)`. Retire l'import de `reflect-metadata` et note le message d'erreur obtenu.
+</Exercice>
+
+<Exercice numero="10.2" titre="La faute de frappe qui ouvre la documentation">
+Avant d'ajouter `@IsIn` (ou en le commentant), lance ta marketplace compilée avec `NODE_ENV=prod npm run start:prod` et vérifie avec `curl -i http://localhost:3000/docs` que la documentation est servie (`200`, ou une redirection vers `/docs/`). Remets `@IsIn` : le même lancement doit s'arrêter avec le code de sortie `1` (`echo $?`) et le message qui nomme `NODE_ENV`. Enfin, avec `NODE_ENV=production`, `/docs` doit répondre `404` pendant que `GET /api/produits` fonctionne toujours.
+</Exercice>
+
+<Exercice numero="10.3" titre="Démarrer sans fichier .env">
+Renomme temporairement ton `.env` en `sauvegarde.env`. Lance `npm run build`, puis `npx typeorm migration:show -d dist/data-source.js` en passant les cinq variables `DB_*` devant la commande (`DB_HOST=localhost DB_PORT=5432 … npx typeorm …`) : note l'erreur `ENOENT`. Corrige `data-source.ts` avec `existsSync` et relance : la liste des migrations s'affiche. Fais de même avec `node dist/main.js` (toutes les variables exigées par ta validation devant la commande) : l'application démarre sans fichier. Ajoute `app.enableShutdownHooks()` à `main.ts` (on le mettra à l'épreuve à l'exercice 10.12), puis remets ton `.env` en place.
+</Exercice>
+
+</Exercices>

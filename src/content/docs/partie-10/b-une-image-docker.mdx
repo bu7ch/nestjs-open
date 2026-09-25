@@ -1,0 +1,179 @@
+---
+title: "b · Une image Docker"
+description: "Un Dockerfile multi-étapes : une image légère, sans root, rapide à reconstruire, et des migrations qui tournent sans nest."
+projet: loup-garou
+duree: 60
+prerequis: Section a ; partie 5, sections a et d (Docker, les migrations).
+exercices: 3
+sidebar:
+  order: 2
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Depuis la partie 5, tu lances PostgreSQL avec `docker compose` : tu utilises une **image** (`postgres:16`), un paquet qui contient un système minimal, le programme et tout ce dont il a besoin, et Docker en fait un **conteneur**, une copie qui tourne. Cette section fait la même chose pour ton API : une image `loupgarou-api` qui démarre de façon identique sur ta machine, dans la CI et sur un serveur, sans que personne n'ait à y installer Node.
+
+Une image se décrit dans un fichier `Dockerfile`, à la racine du projet : une suite d'instructions, exécutées de haut en bas.
+
+## La version naïve
+
+```dockerfile title="Dockerfile"
+FROM node:24
+WORKDIR /app
+COPY . .
+RUN npm install
+RUN npm run build
+CMD ["npm", "run", "start:prod"]
+```
+
+`FROM` part d'une image existante (Node 24, la version LTS active), `WORKDIR` choisit le dossier de travail, `COPY . .` y copie le projet, les deux `RUN` exécutent des commandes pendant la construction, et `CMD` dit quoi lancer au démarrage du conteneur. On construit l'image avec `docker build -t loupgarou-api .` (le point désigne le dossier courant).
+
+Elle fonctionne. Mais on l'a mesurée, et elle a quatre défauts :
+
+- **Elle est énorme : 2,08 Go sur le disque** (513 Mo à télécharger, une fois compressée). Elle contient Node, un système Debian complet avec ses outils de compilation, les dépendances de développement (TypeScript, Vitest, la CLI de NestJS) et tout ton code source.
+- **Elle contient tout le dossier.** `docker run --rm loupgarou-api ls -a` liste `src`, `test`, les fichiers de configuration… et elle contiendrait ton `.env` s'il était là.
+- **Elle tourne en administrateur.** `docker run --rm loupgarou-api id` affiche `uid=0(root)`. Si quelqu'un trouve une faille dans ton API, il a tous les droits dans le conteneur.
+- **Chaque modification de code réinstalle toutes les dépendances**, on verra pourquoi plus bas.
+
+## Ce qui n'entre pas dans l'image : .dockerignore
+
+`docker build` commence par envoyer le dossier du projet à Docker : c'est le **contexte** de construction. Sans précaution, il contient `node_modules` (installé pour ton système, macOS ou Windows, alors que l'image est un Linux), `dist`, `.git` et ton `.env`. Un fichier `.dockerignore`, sur le modèle de `.gitignore`, les écarte :
+
+```text title=".dockerignore"
+node_modules
+dist
+coverage
+.git
+.github
+.env*
+*.md
+Dockerfile*
+docker-compose.yml
+```
+
+On a mesuré l'effet sur le projet du cours : sans ce fichier, `docker build` transférait **206,59 Mo** de contexte ; avec, **2,30 ko**. Et la ligne `COPY . .` venait recopier le `node_modules` de la machine hôte par-dessus celui que l'image avait installé pour Linux. La ligne `.env*` est la plus importante : c'est elle qui garantit qu'aucun secret ne part dans l'image, même par une instruction `COPY . .`.
+
+## Une image en deux étapes
+
+Pour **construire** l'application, il faut TypeScript, la CLI de NestJS et toutes les dépendances. Pour l'**exécuter**, il suffit de Node, du JavaScript compilé (`dist`) et des dépendances de production. Un Dockerfile **multi-étapes** sépare les deux : une première image construit, une seconde, toute neuve, ne récupère que le résultat.
+
+```dockerfile title="Dockerfile" {2,4,5,6,7,10,14,15,16,17,18}
+# Étape 1 : construire
+FROM docker.io/library/node:24-alpine AS construction
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build && npm prune --omit=dev
+
+# Étape 2 : exécuter
+FROM docker.io/library/node:24-alpine
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=construction /app/package.json ./
+COPY --from=construction /app/node_modules ./node_modules
+COPY --from=construction /app/dist ./dist
+USER node
+EXPOSE 3000
+CMD ["node", "dist/main.js"]
+```
+
+- Ligne 2 : `node:24-alpine` repose sur **Alpine**, une distribution Linux minuscule, au lieu de Debian. `AS construction` donne un nom à l'étape, pour y faire référence plus bas. Le nom complet (`docker.io/library/…`) évite que Podman demande dans quel registre chercher, comme en partie 5.
+- Lignes 4 et 5 : on copie **seulement** `package.json` et `package-lock.json`, puis `npm ci` installe exactement les versions du fichier de verrouillage. `npm ci` est fait pour les installations automatiques : il refuse de continuer si `package.json` et `package-lock.json` ne sont pas d'accord, au lieu de modifier le second.
+- Lignes 6 et 7 : le code arrive ensuite, on compile, puis `npm prune --omit=dev` retire les dépendances de développement de `node_modules`.
+- Ligne 10 : la seconde étape repart d'une image **neuve**. Tout ce que la première a installé ou compilé est jeté, sauf ce qu'on vient chercher.
+- Lignes 14 et 15 : `COPY --from=construction` copie depuis la première étape : `node_modules` (production seulement) et `dist`. Le code source TypeScript, les tests et la CLI n'entrent jamais dans l'image finale.
+- Ligne 16 : `USER node` fait tourner l'application avec l'utilisateur `node`, que l'image officielle prévoit pour ça, sans droits d'administrateur.
+- Ligne 17 : `EXPOSE` documente le port qu'écoute l'application. Il ne publie rien : c'est `ports` dans Docker Compose (section c) qui ouvre l'accès.
+- Ligne 18 : `CMD` lance `node` **directement**, sans passer par `npm`. La section d montre ce que ça change à l'arrêt.
+
+`ENV NODE_ENV=production` (ligne 11) n'est pas un secret : c'est la seule variable qu'on peut écrire dans l'image sans risque.
+
+### Vérifier
+
+```bash
+docker build -t loupgarou-api .
+docker run --rm loupgarou-api id
+docker run --rm loupgarou-api ls -a
+```
+
+```text
+uid=1000(node) gid=1000(node) groups=1000(node),1000(node)
+.
+..
+dist
+node_modules
+package.json
+```
+
+Et lancée sans aucune variable, l'image refuse de démarrer, comme prévu en section a : `docker run --rm loupgarou-api` affiche `Variables d'environnement invalides : DB_HOST (isNotEmpty, isString), …` et se termine avec le code `1`.
+
+## Ce qu'on a gagné
+
+On a construit le même projet de quatre façons, et relevé ce qu'affiche `docker images` (la taille sur le disque, puis la taille à télécharger) :
+
+| Dockerfile | Sur le disque | À télécharger |
+|---|---|---|
+| Naïf (`node:24`, une étape) | 2,08 Go | 513 Mo |
+| Deux étapes, `node:24-slim` (Debian allégée) | 518 Mo | 101 Mo |
+| Deux étapes, `node:24-alpine`, sans `npm prune` | 566 Mo | 117 Mo |
+| Deux étapes, `node:24-alpine`, avec `npm prune` | **408 Mo** | **82,5 Mo** |
+
+Cinq fois plus petite sur le disque, six fois plus légère à télécharger. Chaque déploiement la télécharge, chaque serveur la stocke : ça compte. Ce qui reste est surtout `node_modules` (151 Mo), dont 29 Mo pour TypeORM et 23,6 Mo pour TypeScript. TypeScript en production ? `npm ls typescript --omit=dev` répond que c'est `@nestjs/swagger` qui l'exige, même si la documentation est désactivée en production.
+
+### Un avertissement sans conséquence
+
+Pendant `npm ci`, le npm de l'image affiche :
+
+```text
+npm warn install-scripts 2 packages have install scripts not yet covered by allowScripts:
+npm warn install-scripts   @scarf/scarf@1.4.0 (postinstall: node ./report.js)
+npm warn install-scripts   argon2@0.45.1 (install: cross-env ZERO_AR_DATE=1 node-gyp-build)
+```
+
+Les versions récentes de npm n'exécutent plus d'office les scripts qu'un paquet demande à lancer à son installation : c'est une protection contre les paquets malveillants. Pour `argon2` (le hachage de la partie 7), ce script ne servirait qu'à compiler le module s'il n'était pas fourni tout prêt. Or le paquet contient déjà des versions compilées pour Linux, y compris Alpine. On l'a vérifié dans l'image : `docker run --rm loupgarou-api node -e "require('argon2').hash('x').then(console.log)"` affiche bien un hachage `$argon2id$…`.
+
+## L'ordre des instructions et le cache
+
+Docker construit une image **couche par couche** : chaque instruction produit une couche, et Docker la garde en cache. À la construction suivante, il réutilise chaque couche tant que ce dont elle dépend n'a pas changé ; dès qu'une couche change, toutes celles qui suivent sont reconstruites.
+
+C'est pour ça que le Dockerfile copie `package.json` **avant** le reste. Quand tu modifies un fichier de `src/`, les lignes 4 et 5 n'ont pas changé : `npm ci` est repris du cache (`CACHED` dans la sortie de `docker build`), et seules la compilation et la suite sont refaites. Dans la version naïve, `COPY . .` vient en premier : n'importe quelle modification invalide la copie, donc `npm install` recommence de zéro.
+
+Mesuré après la modification d'un seul fichier de `src/` : **4,3 secondes** pour reconstruire l'image multi-étapes, **15,6 secondes** pour la version naïve. L'écart grandit avec le nombre de dépendances, et c'est à chaque construction, dans la CI comprise.
+
+## Les migrations dans l'image
+
+La partie 5 l'a annoncé : en production, **seules les migrations** modifient le schéma, jamais `synchronize`. Ta configuration de la partie 6 le garantit déjà : `synchronize` et `dropSchema` ne valent `true` que si `NODE_ENV` vaut `test`.
+
+Reste à exécuter les migrations depuis l'image. Le réflexe serait `npm run migration:run`, mais :
+
+```text
+> nest build && typeorm migration:run -d dist/data-source.js
+
+sh: nest: not found
+```
+
+Le script recompile d'abord le projet, et la CLI de NestJS est une dépendance de développement, retirée par `npm prune`. Dans l'image, le code est **déjà** compilé : on appelle directement la CLI de TypeORM, qui fait partie des dépendances de production.
+
+```bash
+node_modules/.bin/typeorm migration:run -d dist/data-source.js
+```
+
+`data-source.ts` lit alors ses paramètres dans les variables d'environnement, puisqu'il n'y a pas de `.env` dans l'image (c'est la correction de la section a). La section c lance cette commande automatiquement, avant l'API, à chaque démarrage : une migration déjà appliquée n'est jamais rejouée, grâce à la table `migrations` (partie 5).
+
+<Exercices partie={10} de={4} a={6}>
+
+<Exercice numero="10.4" titre="L'image de la marketplace">
+Écris le `Dockerfile` multi-étapes et le `.dockerignore` de ta marketplace, et construis l'image avec `docker build -t marketplace-api .`. Vérifie que `docker run --rm marketplace-api id` affiche `uid=1000(node)`, que `docker run --rm marketplace-api ls -a` ne liste que `dist`, `node_modules` et `package.json`, et que `docker run --rm marketplace-api` (sans variables) s'arrête avec le code `1` et le message de l'exercice 10.1. Construis aussi la version naïve de la section sous le nom `marketplace-naif` (avec `docker build -f Dockerfile.naif`), et note les deux tailles données par `docker images`.
+</Exercice>
+
+<Exercice numero="10.5" titre="Le cache des couches">
+Modifie une ligne d'un fichier de `src/` et reconstruis `marketplace-api` : relève dans la sortie les étapes marquées `CACHED` et le temps total (`time docker build …`). Déplace ensuite `COPY . .` au-dessus de `RUN npm ci`, modifie encore `src/`, et reconstruis : qu'est-ce qui n'est plus en cache, et combien de temps as-tu perdu ? Enfin, renomme temporairement `.dockerignore` et relève la taille du contexte affichée par `docker build` (ligne `transferring context`). Remets tout en ordre.
+</Exercice>
+
+<Exercice numero="10.6" titre="Aucun secret dans l'image">
+Écris un petit `Dockerfile.fuite` de deux lignes (`FROM docker.io/library/node:24-alpine`, puis `ENV JWT_SECRET=un-faux-secret-pour-voir`), construis-le, et retrouve le secret avec `docker image inspect --format '{{json .Config.Env}}'` puis avec `docker history`. Vérifie ensuite que la même commande, sur `marketplace-api`, ne montre que `NODE_ENV=production` en plus des variables de l'image Node. Supprime l'image de test (`docker rmi`). Enfin, montre que `npm run migration:run` échoue dans ton image (`docker run --rm marketplace-api npm run migration:run`) et note pourquoi.
+</Exercice>
+
+</Exercices>
