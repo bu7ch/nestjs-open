@@ -1,0 +1,192 @@
+---
+title: "e · Des erreurs cohérentes, un contrat figé"
+description: "Des erreurs de validation exploitables champ par champ, documentées, et un fichier de référence qui rend visible tout changement de l'API."
+projet: loup-garou
+duree: 50
+prerequis: Section a (documentation) et partie 8, section e (le filtre d'exceptions global).
+exercices: 3
+sidebar:
+  order: 5
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Une API propre se reconnaît à ses erreurs autant qu'à ses succès. En partie 8, tu as donné à **toutes** les erreurs le même format :
+
+```json
+{ "statusCode": 404, "message": "Village 9999 introuvable", "chemin": "/api/villages/9999", "horodatage": "…", "requeteId": "abc-1" }
+```
+
+Il reste deux défauts. Pour une validation ratée, `message` est un tableau de phrases anglaises (`"limite must not be greater than 100"`) : un formulaire du front ne sait pas **quel champ** afficher en rouge. Et rien de tout ça n'est dans la documentation : un client ne sait pas quelles erreurs attendre.
+
+## Dire quel champ est en cause
+
+Le `ValidationPipe` accepte une fonction, `exceptionFactory`, qui fabrique l'exception à partir de la liste des erreurs. On y garde le tableau plat de la partie 8 (pour ne rien casser) et on ajoute un détail **par champ** :
+
+```ts title="src/commun/erreurs.ts"
+export function erreursDeValidation(erreurs: ValidationError[]) {
+	const champs = erreurs.map((e) => ({ champ: e.property, erreurs: Object.values(e.constraints ?? {}) }));
+	return new BadRequestException({ message: champs.flatMap((c) => c.erreurs), champs });
+}
+```
+
+```ts title="src/configurer-app.ts" {2}
+app.useGlobalPipes(new ValidationPipe({
+	whitelist: true, forbidNonWhitelisted: true, exceptionFactory: erreursDeValidation,
+}));
+```
+
+Le filtre de la partie 8 ne recopie que `message` : il faut lui apprendre à transmettre `champs` quand l'exception en porte.
+
+```ts title="src/commun/toutes-exceptions.filter.ts" {6,9,10}
+export interface ErreurDeChamp {
+	champ: string;
+	erreurs: string[];
+}
+
+private decrire(exception: unknown): { statut: number; message: string | string[]; champs?: ErreurDeChamp[] } {
+	if (exception instanceof HttpException) {
+		const corps = exception.getResponse();
+		const objet = typeof corps === 'string' ? { message: corps } : (corps as { message?: string | string[]; champs?: ErreurDeChamp[] });
+		return { statut: exception.getStatus(), message: objet.message ?? exception.message, champs: objet.champs };
+	}
+	// … erreurs de base de données et erreurs inattendues, inchangées
+}
+```
+
+Et dans `catch`, la réponse ajoute `champs` **seulement s'il existe** :
+
+```ts title="src/commun/toutes-exceptions.filter.ts" {3}
+reponse.status(statut).json({
+	statusCode: statut, message, chemin: requete.originalUrl, horodatage: new Date().toISOString(), requeteId: requete.requeteId,
+	...(champs && { champs }),
+});
+```
+
+Une requête `?limite=500&page=0` reçoit alors :
+
+```json
+{
+  "statusCode": 400,
+  "message": ["page must not be less than 1", "limite must not be greater than 100"],
+  "champs": [
+    { "champ": "page", "erreurs": ["page must not be less than 1"] },
+    { "champ": "limite", "erreurs": ["limite must not be greater than 100"] }
+  ],
+  "chemin": "/v2/api/villages?limite=500&page=0",
+  "horodatage": "…",
+  "requeteId": "abc-1"
+}
+```
+
+Une erreur qui n'est pas une validation (un `404`, un `401`) n'a **pas** de champ `champs` : les tests de la partie 8, qui comparent le corps d'un `404` exactement, continuent de passer. Un paramètre qu'on n'attendait pas donne, lui aussi, un détail exploitable : `?colonne=x` renvoie `{ champ: 'colonne', erreurs: ['property colonne should not exist'] }`.
+
+Le format n'est pas le seul possible. Il existe un standard, `application/problem+json` (RFC 9457), avec ses propres noms de champs. Le format maison a l'avantage d'être le tien depuis la partie 8 ; l'essentiel est de n'en avoir **qu'un seul**, partout.
+
+## Documenter les erreurs
+
+Un schéma pour la réponse d'erreur, et un décorateur qui l'attache aux routes selon les statuts qu'elles peuvent renvoyer :
+
+```ts title="src/commun/erreurs.ts"
+export class ErreurDto {
+	@ApiProperty({ example: 404 }) statusCode: number;
+	@ApiProperty({ oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }], example: 'Village 9 introuvable' })
+	message: string | string[];
+	@ApiProperty({ example: '/api/villages/9' }) chemin: string;
+	@ApiProperty({ type: String, format: 'date-time' }) horodatage: string;
+	@ApiPropertyOptional({ description: 'Identifiant à communiquer pour retrouver l\'erreur dans les journaux' }) requeteId?: string;
+	@ApiPropertyOptional({ type: [ErreurDeChampDto], description: 'Présent pour les erreurs de validation : une entrée par champ' }) champs?: ErreurDeChampDto[];
+}
+
+const DESCRIPTIONS: Record<number, string> = {
+	400: 'Requête invalide (paramètre ou corps refusé)',
+	401: 'Jeton manquant, invalide ou expiré',
+	403: 'Action interdite',
+	404: 'Ressource introuvable',
+	409: 'Conflit avec l\'état actuel (doublon, ressource liée)',
+};
+
+export const ApiErreurs = (...statuts: number[]) =>
+	applyDecorators(
+		ApiExtraModels(ErreurDto),
+		...statuts.map((status) => ApiResponse({ status, description: DESCRIPTIONS[status], schema: { $ref: getSchemaPath(ErreurDto) } })),
+	);
+```
+
+(`ErreurDeChampDto` est la petite classe `{ champ, erreurs }` du même fichier.) `message` est documenté avec `oneOf` : c'est une chaîne pour la plupart des erreurs, un tableau pour une validation. Sur une route :
+
+```ts
+@Get(':id')
+@ApiOperation({ summary: 'Détail d\'un village' })
+@ApiOkResponse({ type: VillageReponseDto })
+@ApiErreurs(400, 401, 404)
+trouver(@Param('id', ParseIntPipe) id: number) { /* … */ }
+```
+
+Un statut n'est à lister que s'il peut **vraiment** arriver : `400` ici parce que `ParseIntPipe` refuse un `id` non numérique, `401` à cause du guard global, `404` parce que le service le lève.
+
+## Les tests
+
+```ts title="test/erreurs.e2e-spec.ts"
+it('validation : message à plat ET détail par champ', async () => {
+	const r = await http().get('/v2/api/villages?limite=500&page=0').set('Authorization', entete).set('X-Request-Id', 'abc-1').expect(400);
+	expect(r.body).toMatchObject({ statusCode: 400, requeteId: 'abc-1' });
+	expect(r.body.champs).toEqual(expect.arrayContaining([
+		{ champ: 'page', erreurs: ['page must not be less than 1'] },
+		{ champ: 'limite', erreurs: ['limite must not be greater than 100'] },
+	]));
+});
+
+it('paramètre inconnu : rejeté avec le nom du champ', async () => {
+	const r = await http().get('/v2/api/villages?tri=nom&colonne=x').set('Authorization', entete).expect(400);
+	expect(r.body.champs).toEqual([{ champ: 'colonne', erreurs: ['property colonne should not exist'] }]);
+});
+
+it('un 404 n\'a pas de champs', async () => {
+	const r = await http().get('/api/villages/9999').set('Authorization', entete).expect(404);
+	expect(r.body.champs).toBeUndefined();
+});
+
+it('la documentation annonce ces erreurs', () => {
+	const reponses = document.paths['/api/villages/{id}']?.get?.responses as Record<string, unknown>;
+	expect(Object.keys(reponses)).toEqual(expect.arrayContaining(['200', '400', '401', '404']));
+	expect(document.components?.schemas).toHaveProperty('ErreurDto');
+});
+```
+
+## Figer le contrat
+
+Tu as maintenant une documentation générée. Reste un risque : quelqu'un renomme un champ, retire un paramètre, et **la documentation change sans que personne ne s'en aperçoive**, jusqu'au jour où un client casse. La parade : enregistrer le document complet dans un fichier de référence, et faire échouer un test dès qu'il diffère.
+
+```ts title="test/swagger.e2e-spec.ts"
+it('le contrat est figé dans un fichier : toute modification de l\'API doit y être visible', async () => {
+	await expect(JSON.stringify(document, null, 2)).toMatchFileSnapshot('./openapi.snapshot.json');
+});
+```
+
+Le premier lancement crée `test/openapi.snapshot.json` (12 Ko pour notre API) : on le commite. Ensuite, chaque lancement compare. On l'a essayé : renommer `id` en `identifiant` dans `VillageReponseDto` a fait échouer ce test (`Snapshot … mismatched`) ; remettre `id` l'a fait repasser. Quand un changement est **voulu**, on relance les tests avec `-u`, qui réécrit le fichier :
+
+```bash
+npx vitest run --config vitest.config.e2e.ts -u
+```
+
+Le vrai bénéfice est dans la relecture. Un changement d'API apparaît maintenant comme une modification de `openapi.snapshot.json` dans le diff de la pull request, en toutes lettres : un champ qui disparaît, un statut qui change, un paramètre qui devient obligatoire. Le relecteur n'a plus à le deviner en lisant du code, et **c'est le moment de se demander « est-ce un changement cassant ? »** (le tableau de la section b), donc « faut-il une nouvelle version ? ».
+
+Une condition pour que ça marche : le document doit être le **même** dans les tests et à l'exécution. C'est la raison de choisir les `@ApiProperty` écrits à la main plutôt que le plugin du CLI (section a) : sous Vitest, le plugin ne s'exécute pas et le fichier de référence décrirait des schémas vides.
+
+<Exercices partie={9} de={13} a={15}>
+
+<Exercice numero="9.13" titre="Un détail par champ">
+Ajoute `exceptionFactory` à ton `ValidationPipe` et fais transmettre `champs` par ton filtre. Écris les tests : deux champs invalides dans une même requête donnent deux entrées dans `champs`, un paramètre inconnu est nommé dans `champs`, et un `404` n'a pas de `champs`. Vérifie que les tests de la partie 8 (exercice 8.14) passent toujours.
+</Exercice>
+
+<Exercice numero="9.14" titre="Documenter les erreurs">
+Écris `ErreurDto` et `ApiErreurs` pour ta marketplace, applique-le à trois routes en ne listant que les statuts qui peuvent vraiment arriver, et écris un test sur le document : les statuts attendus sont présents, `ErreurDto` est dans `components.schemas`. Retire `ApiExtraModels` du décorateur et note ce que devient le schéma dans `/docs-json`.
+</Exercice>
+
+<Exercice numero="9.15" titre="Figer le contrat">
+Ajoute le test `toMatchFileSnapshot` pour le document de ta marketplace et commite le fichier. Renomme un champ d'un DTO de réponse : le test doit échouer. Relance avec `-u`, lis le diff du fichier et écris une phrase qui dit si c'est un changement cassant, et si oui ce que tu ferais (section b).
+</Exercice>
+
+</Exercices>

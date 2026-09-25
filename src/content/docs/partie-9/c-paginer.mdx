@@ -1,0 +1,225 @@
+---
+title: "c · Paginer les listes"
+description: "Découper une liste en pages, renvoyer le total, et savoir quand une pagination par curseur est meilleure."
+projet: loup-garou
+duree: 60
+prerequis: Sections a et b (documentation, versions) ; partie 4 (validation) ; partie 5 (TypeORM).
+exercices: 3
+sidebar:
+  order: 3
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+`GET /api/villages` renvoie **tous** les villages. Avec 25, personne ne s'en plaint. Avec 100 000, la réponse est énorme, lente à fabriquer, et le front n'en affiche que vingt. La **pagination** découpe la liste : le client demande une page, avec une taille, et reçoit ce morceau plus de quoi savoir combien il en reste.
+
+Grâce à la section b, on peut changer la forme de la réponse sans casser personne : tout ce qui suit vit sous **`/v2/api/villages`**.
+
+## Les paramètres : `page` et `limite`
+
+```ts title="src/commun/pagination.dto.ts"
+export class PaginationDto {
+	@ApiPropertyOptional({ description: 'Numéro de la page, à partir de 1', minimum: 1, default: 1 })
+	@Type(() => Number)
+	@IsInt()
+	@Min(1)
+	page: number = 1;
+
+	@ApiPropertyOptional({ description: 'Nombre d\'éléments par page', minimum: 1, maximum: 100, default: 20 })
+	@Type(() => Number)
+	@IsInt()
+	@Min(1)
+	@Max(100)
+	limite: number = 20;
+}
+```
+
+Trois détails comptent :
+
+- **`@Type(() => Number)`.** Dans une URL, `?page=2` arrive comme le **texte** `"2"`. Sans cette ligne, `@IsInt()` refuse la valeur, avec un message qui déroute : la requête `page=2` échoue avec `page must not be less than 1` **et** `page must be an integer number`.
+- **Les valeurs par défaut** (`= 1`, `= 20`) : un client qui n'envoie rien reçoit la première page de vingt éléments.
+- **Un plafond, `@Max(100)`.** Sans lui, `?limite=1000000` recrée le problème qu'on voulait résoudre. Au-delà, on répond `400` plutôt que de corriger en silence : le client apprend tout de suite que sa demande est refusée.
+
+## La forme de la réponse
+
+On enveloppe les éléments et on ajoute des métadonnées :
+
+```json
+{
+  "donnees": [ { "id": 11, "nom": "Brume" } ],
+  "meta": { "page": 2, "limite": 10, "total": 25, "totalPages": 3 }
+}
+```
+
+```ts title="src/commun/page.ts"
+export class MetaPage {
+	@ApiProperty({ example: 2 }) page: number;
+	@ApiProperty({ example: 20 }) limite: number;
+	@ApiProperty({ example: 57 }) total: number;
+	@ApiProperty({ example: 3 }) totalPages: number;
+}
+
+export interface Page<T> {
+	donnees: T[];
+	meta: MetaPage;
+}
+
+export function creerPage<T>(donnees: T[], total: number, page: number, limite: number): Page<T> {
+	return { donnees, meta: { page, limite, total, totalPages: Math.ceil(total / limite) } };
+}
+```
+
+Le `total` permet d'afficher « page 2 sur 3 » ou d'inactiver le bouton « suivant ». `Math.ceil` arrondit vers le haut : 57 éléments par 20 font 3 pages (2,85 arrondi), et 60 éléments en font exactement 3.
+
+## La requête
+
+TypeORM fait le découpage avec `skip` (combien d'éléments sauter) et `take` (combien en garder), et `findAndCount` renvoie en plus le nombre total, en une méthode :
+
+```ts title="src/villages/villages.service.ts" {3,4,5}
+async lister({ page, limite }: PaginationDto) {
+	const [donnees, total] = await this.villages.findAndCount({
+		order: { creeLe: 'DESC', id: 'ASC' },
+		skip: (page - 1) * limite,
+		take: limite,
+	});
+	return creerPage(donnees, total, page, limite);
+}
+```
+
+- Ligne 3 : **le tri est indispensable.** Sans `ORDER BY`, SQL ne garantit aucun ordre, et deux pages consécutives peuvent se recouvrir ou laisser des trous. Le tri sur `id` en second sert de **départage** : deux villages créés à la même seconde auront toujours le même ordre entre eux.
+- Lignes 4 et 5 : la page 1 saute 0 élément, la page 3 en saute `2 × limite`.
+
+```ts title="src/villages/villages.controller.ts"
+@Version('2')
+@Get()
+@ApiOperation({ summary: 'Liste les villages, paginés' })
+@ApiPage(VillageReponseDto)
+lister(@Query() pagination: PaginationDto) {
+	return this.service.lister(pagination);
+}
+```
+
+`@Query()` avec une classe : le `ValidationPipe` (partie 4) transforme et valide les paramètres comme il le fait pour un corps de requête. Ton `@Query()` reçoit alors un objet avec `page` et `limite` **en nombres**, valeurs par défaut comprises, même si ton `ValidationPipe` n'a pas l'option `transform: true` (on l'a vérifié avec la configuration de la partie 6 : `whitelist` et `forbidNonWhitelisted`). Grâce à `whitelist` et `forbidNonWhitelisted`, un paramètre inconnu (`?colonne=x`) est refusé avec `property colonne should not exist`.
+
+### Documenter une réponse générique
+
+`@ApiOkResponse({ type: Page<VillageReponseDto> })` est impossible : TypeScript efface les types génériques à l'exécution, Swagger ne peut pas lire `<VillageReponseDto>`. On construit donc le schéma à la main, dans un décorateur réutilisable :
+
+```ts title="src/commun/page.ts" {3,8,9}
+export const ApiPage = <M extends Type<unknown>>(modele: M) =>
+	applyDecorators(
+		ApiExtraModels(MetaPage, modele),
+		ApiOkResponse({
+			schema: {
+				required: ['donnees', 'meta'],
+				properties: {
+					donnees: { type: 'array', items: { $ref: getSchemaPath(modele) } },
+					meta: { $ref: getSchemaPath(MetaPage) },
+				},
+			},
+		}),
+	);
+```
+
+`ApiExtraModels` (ligne 3) n'est pas facultatif. Sans lui, `getSchemaPath` écrit bien une référence `#/components/schemas/Item`, mais le schéma `Item` n'est **jamais ajouté** au document : la référence pointe dans le vide (mesuré : `components.schemas` reste vide). Les outils qui génèrent du code client à partir du fichier échouent alors, alors que Swagger UI, lui, s'affiche sans erreur visible.
+
+## Ce que fait une page hors limites
+
+Que renvoie `?page=99` pour 25 éléments ? On a le choix. Ici : **`200` et une liste vide**, avec le `meta` correct (`total: 25`). Une page vide n'est pas une erreur, c'est une réponse exacte : il n'y a rien à cet endroit. Ça évite aussi qu'un client qui supprime des éléments entre deux appels reçoive soudain un `404`. Pour les valeurs impossibles (`page=0`, `limite=101`, `limite=2.5`, `page=abc`), c'est `400`.
+
+## Quand la pagination par pages ne suffit plus
+
+La pagination par numéro de page a deux défauts, qu'on a mesurés :
+
+**1. Les données bougent entre deux pages.** Le client lit la page 1 (les dix villages les plus récents), puis quelqu'un crée un village, puis il lit la page 2. Tout a glissé d'un cran : le dernier élément de la page 1 se retrouve **en premier** de la page 2, et le client le voit deux fois. Avec les identifiants 25 à 16 sur la page 1, l'ajout du village 26 fait commencer la page 2 par le 16.
+
+**2. Sauter des éléments a un coût.** `OFFSET` oblige la base à parcourir puis jeter tous les éléments sautés. Sur 300 000 villages, lire la page qui commence à l'élément 290 000 a pris environ 12 ms, contre 1 ms pour la première page. C'est modeste ici ; ça grandit avec la profondeur et la taille de la table.
+
+La **pagination par curseur** (ou « keyset ») règle les deux : au lieu de dire « saute 290 000 éléments », le client dit « donne-moi ce qui vient **après** l'élément 290 000 ».
+
+```ts title="src/commun/curseur.dto.ts"
+export class CurseurDto {
+	@ApiPropertyOptional({ description: 'Identifiant du dernier élément déjà reçu (0 pour commencer)', minimum: 0, default: 0 })
+	@Type(() => Number)
+	@IsInt()
+	@Min(0)
+	apres: number = 0;
+
+	@ApiPropertyOptional({ minimum: 1, maximum: 100, default: 20 })
+	@Type(() => Number)
+	@IsInt()
+	@Min(1)
+	@Max(100)
+	limite: number = 20;
+}
+```
+
+```ts title="src/villages/villages.service.ts" {2,5}
+async apresCurseur(apres: number, limite: number) {
+	const lignes = await this.villages.find({ where: { id: MoreThan(apres) }, order: { id: 'ASC' }, take: limite + 1 });
+	const suite = lignes.length > limite;
+	const donnees = suite ? lignes.slice(0, limite) : lignes;
+	return { donnees, curseurSuivant: suite ? donnees[donnees.length - 1]!.id : null };
+}
+```
+
+- Ligne 2 : on demande **un élément de trop** (`limite + 1`). S'il est là, il reste des éléments après cette page ; sinon, c'est la dernière. Pas besoin d'une requête de comptage.
+- Ligne 5 : `curseurSuivant` est l'identifiant du dernier élément rendu, que le client renverra dans `?apres=`. `null` signifie « fin ».
+
+On a une classe `CurseurDto` séparée plutôt que de réutiliser `PaginationDto` : écrire `@Query() { limite }: PaginationDto` à côté d'un `@Query('apres')` fait échouer la requête avec `property apres should not exist` : `PaginationDto` reçoit **tous** les paramètres de l'URL, et `apres` n'y est pas déclaré.
+
+La contrepartie : pas de `total`, pas de « page 7 » directe, et l'ordre doit s'appuyer sur une colonne à valeurs uniques (ici l'identifiant). C'est le bon outil pour un fil qui défile ; les pages numérotées restent le bon outil pour un tableau qu'on parcourt. Les deux se testent :
+
+```ts title="test/villages.e2e-spec.ts"
+it('page 3 de 10 : les 5 derniers, avec le bon meta', async () => {
+	const r = await http().get('/v2/api/villages?limite=10&page=3').set('Authorization', entete).expect(200);
+	expect(r.body.donnees).toHaveLength(5);
+	expect(r.body.meta).toEqual({ page: 3, limite: 10, total: 25, totalPages: 3 });
+});
+
+it('page au-delà de la fin : 200 et liste vide', async () => {
+	const r = await http().get('/v2/api/villages?page=99').set('Authorization', entete).expect(200);
+	expect(r.body.donnees).toEqual([]);
+	expect(r.body.meta.total).toBe(25);
+});
+
+it.each(['page=0', 'page=abc', 'limite=0', 'limite=101', 'limite=2.5', 'inconnu=1'])('refuse ?%s avec 400', async (qs) => {
+	await http().get(`/v2/api/villages?${qs}`).set('Authorization', entete).expect(400);
+});
+
+it('un ajout entre deux pages fait répéter un élément, mais pas avec le curseur', async () => {
+	// … ordre décroissant, un seul doublon avec les pages ; aucun avec le curseur
+});
+
+it('curseur : parcourt tout sans doublon ni oubli', async () => {
+	const vus: number[] = [];
+	let apres = 0;
+	for (let tour = 0; tour < 10; tour++) {
+		const r = await http().get(`/v2/api/villages/curseur?apres=${apres}&limite=10`).set('Authorization', entete).expect(200);
+		vus.push(...r.body.donnees.map((v: { id: number }) => v.id));
+		if (r.body.curseurSuivant === null) break;
+		apres = r.body.curseurSuivant;
+	}
+	expect(vus).toHaveLength(25);
+	expect(new Set(vus).size).toBe(25);
+});
+```
+
+Et un test unitaire pour la petite fonction `creerPage`, sans aucune base : 57 éléments par 20 donnent 3 pages, 60 par 20 aussi, et un total de 0 donne 0 page.
+
+<Exercices partie={9} de={7} a={9}>
+
+<Exercice numero="9.7" titre="Paginer le catalogue">
+Ajoute `PaginationDto`, `creerPage` et `ApiPage` à ta marketplace, puis fais de `GET /v2/api/produits` une liste paginée (`page`, `limite`, plafond de 100). Écris les tests de bout en bout : la page 3 d'une liste de 25 produits par 10, une page hors limites (`200` et liste vide) et les valeurs refusées (`page=0`, `limite=101`, `page=abc`).
+</Exercice>
+
+<Exercice numero="9.8" titre="Le piège du @Type">
+Retire `@Type(() => Number)` de ta `PaginationDto` et note le message d'erreur exact que reçoit `?page=2`. Remets-le. Puis retire `ApiExtraModels` de `ApiPage` et regarde `/docs-json` : que devient `components.schemas` ? Écris un test qui l'aurait détecté.
+</Exercice>
+
+<Exercice numero="9.9" titre="Le curseur">
+Ajoute `GET /v2/api/produits/curseur` (paramètres `apres` et `limite`, réponse `{ donnees, curseurSuivant }`). Écris un test qui parcourt 25 produits par 10 sans doublon ni oubli, et un test qui montre qu'un produit ajouté entre deux pages numérotées provoque un doublon alors que le curseur n'en produit pas.
+</Exercice>
+
+</Exercices>

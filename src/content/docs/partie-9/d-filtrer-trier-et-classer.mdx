@@ -1,0 +1,197 @@
+---
+title: "d · Filtrer, trier et classer"
+description: "Filtres, recherche et tri choisis par le client sans jamais lui faire confiance, puis un classement calculé par la base."
+projet: loup-garou
+duree: 60
+prerequis: Section c (pagination) ; partie 5 (TypeORM, relations).
+exercices: 3
+sidebar:
+  order: 4
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Une liste paginée ne suffit pas : le client veut les villages **de nuit**, ceux dont le nom contient « lune », triés par nom. Ces choix arrivent dans l'URL, donc de l'extérieur : ils se valident. Et pour le classement des joueurs, il n'y a pas de table à lire, il faut **calculer**.
+
+## Des paramètres qui étendent la pagination
+
+```ts title="src/villages/dto/lister-villages.dto.ts"
+export const COLONNES_DE_TRI = { id: 'v.id', nom: 'v.nom', creeLe: 'v.creeLe' } as const;
+export type ChampDeTri = keyof typeof COLONNES_DE_TRI;
+
+export class ListerVillagesDto extends PaginationDto {
+	@ApiPropertyOptional({ description: 'Texte cherché dans le nom (sans tenir compte des majuscules)', maxLength: 50 })
+	@IsOptional()
+	@IsString()
+	@MaxLength(50)
+	recherche?: string;
+
+	@ApiPropertyOptional({ enum: ['jour', 'nuit'] })
+	@IsOptional()
+	@IsIn(['jour', 'nuit'])
+	phase?: 'jour' | 'nuit';
+
+	@ApiPropertyOptional({ enum: Object.keys(COLONNES_DE_TRI), default: 'creeLe' })
+	@IsIn(Object.keys(COLONNES_DE_TRI))
+	tri: ChampDeTri = 'creeLe';
+
+	@ApiPropertyOptional({ enum: ['asc', 'desc'], default: 'desc' })
+	@IsIn(['asc', 'desc'])
+	ordre: 'asc' | 'desc' = 'desc';
+}
+```
+
+`extends PaginationDto` reprend `page` et `limite`, validation **et** documentation. Le point qui compte le plus est `COLONNES_DE_TRI` : une **liste blanche**. Le client n'envoie jamais un nom de colonne à utiliser tel quel, il envoie une clé (`nom`) et c'est ton code qui connaît la colonne SQL (`v.nom`).
+
+### Pourquoi une liste blanche ?
+
+Une valeur de `WHERE` passe par un **paramètre** (`:phase`) : la base la traite comme une donnée, jamais comme du SQL. Un nom de colonne dans un `ORDER BY` ne peut pas être un paramètre. Si tu le colles dans la requête, le client écrit du SQL. On l'a essayé avec ``orderBy(`v.${tri}`)`` :
+
+| Valeur de `tri` envoyée | Résultat |
+|---|---|
+| `nom` | tri normal |
+| `inconnu` | erreur SQL : `column v.inconnu does not exist` (un `500`) |
+| `id DESC, (SELECT 1/0)` | erreur SQL : `division by zero` |
+
+La troisième ligne est celle qui inquiète : `1/0` a été **exécuté par la base**. À la place de `1/0`, un attaquant met la requête qu'il veut (lire une autre table, ralentir la base). L'essai `id; DROP TABLE villages` n'a, lui, rien détruit : la requête ainsi fabriquée est invalide (`syntax error`) et la table était intacte ensuite. Ce n'est pas une garantie, seulement un essai raté : une lecture détournée suffit déjà à faire des dégâts.
+
+Avec `find({ order: { [tri]: 'ASC' } })`, TypeORM refuse un nom inconnu (`EntityPropertyNotFoundError`), mais l'erreur est encore un `500` : le client aurait dû recevoir un `400`. La liste blanche règle les deux cas : `@IsIn` refuse tout ce qui n'est pas une clé connue avant même d'arriver au service.
+
+## La requête
+
+```ts title="src/villages/villages.service.ts" {3,4,6,7}
+async lister(q: ListerVillagesDto) {
+	const requete = this.villages.createQueryBuilder('v');
+	if (q.phase) requete.andWhere('v.phase = :phase', { phase: q.phase });
+	if (q.recherche) requete.andWhere("v.nom ILIKE :motif ESCAPE '\\'", { motif: `%${echapperLike(q.recherche)}%` });
+
+	requete.orderBy(COLONNES_DE_TRI[q.tri], q.ordre === 'asc' ? 'ASC' : 'DESC');
+	if (q.tri !== 'id') requete.addOrderBy('v.id', 'ASC');
+
+	const [donnees, total] = await requete
+		.skip((q.page - 1) * q.limite)
+		.take(q.limite)
+		.getManyAndCount();
+	return creerPage(donnees, total, q.page, q.limite);
+}
+```
+
+- Lignes 3 et 4 : chaque filtre présent ajoute une condition `AND`. Le `total` renvoyé compte les résultats **filtrés** : avec `?phase=nuit`, `total` vaut 12 sur nos 25 villages, et `totalPages` suit.
+- Ligne 4 : `ILIKE` ignore la casse (`?recherche=TERCE` trouve « Tercelieu »).
+- Lignes 6 et 7 : le tri demandé, puis l'identifiant en départage.
+
+### Piège 1 : le départage qui écrase le tri
+
+La ligne 7 a un `if` qu'on n'écrit pas au premier essai. Avec un simple `.addOrderBy('v.id', 'ASC')`, la requête `?tri=id&ordre=desc` sortait dans l'ordre **croissant** : TypeORM garde une seule direction par colonne, et le départage `id ASC`, ajouté après, a écrasé le `id DESC` demandé. Le test « tri par id décroissant est bien décroissant » l'a détecté ; rien d'autre ne l'aurait fait : pas d'erreur, juste une liste à l'envers.
+
+### Piège 2 : `%` et `_` dans la recherche
+
+Dans `ILIKE`, `%` signifie « n'importe quoi » et `_` « un caractère ». Un visiteur qui cherche « 100% » verrait aussi « 100x », et « Lune_ » trouverait « LuneXRousse ». On échappe ces caractères avant de les mettre dans le motif :
+
+```ts title="src/commun/echapper-like.ts"
+export function echapperLike(texte: string): string {
+	return texte.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+```
+
+`ESCAPE '\\'` dans la requête dit à la base que `\` est le caractère d'échappement. Avec deux villages nommés « Hameau 100% » et « Hameau 100x », `?recherche=100%25` (le `%` s'écrit `%25` dans une URL) ne renvoie que le premier ; avec « Lune_Rousse » et « LuneXRousse », `?recherche=Lune_` ne renvoie que « Lune_Rousse ».
+
+## Le classement : calculer avec la base
+
+Le classement des joueurs n'est pas stocké : il se déduit des participations. Une requête d'agrégation compte, pour chaque joueur, ses parties et celles où il a survécu :
+
+```ts title="src/classement/classement.controller.ts"
+@Get()
+@ApiOperation({ summary: 'Classement des joueurs par nombre de parties survécues' })
+@ApiPage(LigneClassementDto)
+async classement(@Query() { page, limite }: PaginationDto) {
+	const lignes = await this.participations
+		.createQueryBuilder('p')
+		.innerJoin('p.utilisateur', 'u')
+		.select('u.pseudo', 'pseudo')
+		.addSelect('COUNT(*)::int', 'parties')
+		.addSelect('COUNT(*) FILTER (WHERE p.vivant)::int', 'survies')
+		.groupBy('u.id')
+		.orderBy('survies', 'DESC')
+		.addOrderBy('parties', 'DESC')
+		.addOrderBy('u.id', 'ASC')
+		.offset((page - 1) * limite)
+		.limit(limite)
+		.getRawMany<{ pseudo: string; parties: number; survies: number }>();
+
+	const total = await this.participations
+		.createQueryBuilder('p')
+		.select('COUNT(DISTINCT p."utilisateurId")::int', 'n')
+		.getRawOne<{ n: number }>();
+
+	const donnees = lignes.map((l, i) => ({ rang: (page - 1) * limite + i + 1, ...l }));
+	return creerPage(donnees, total?.n ?? 0, page, limite);
+}
+```
+
+Plusieurs choses changent par rapport à la liste des villages :
+
+- **`getRawMany` au lieu de `getMany`.** Le résultat n'est plus une entité, c'est une ligne calculée (`pseudo`, `parties`, `survies`). on utilise `offset` et `limit` (les équivalents de `skip` et `take` pour des lignes brutes) et **on compte à part** le nombre de joueurs classés.
+- **`::int`.** PostgreSQL renvoie `COUNT` sous forme de texte (`'3'`), à cause de sa taille possible ; on le convertit pour que le JSON contienne un nombre.
+- **`COUNT(*) FILTER (WHERE p.vivant)`** compte seulement les lignes vivantes du groupe : une seule requête donne parties **et** survies.
+- **Le classement a trois critères** (survies, puis parties, puis identifiant) : deux joueurs à égalité sont toujours dans le même ordre, donc les pages restent stables.
+- **Le rang** se calcule d'après la position : le premier de la page 2 avec 20 par page est 21e.
+
+Sur un jeu de données fait à la main, le test vérifie la règle de classement :
+
+```ts title="test/classement.e2e-spec.ts"
+// ana : 3 parties, 3 survies ; bob : 3 parties, 1 survie ; cleo : 2 parties, 1 survie ; dan : 1 partie, 1 survie
+it('classe par survies, puis parties, puis ancienneté', async () => {
+	const r = await http().get('/api/classement').set('Authorization', entete).expect(200);
+	expect(r.body.donnees).toEqual([
+		{ rang: 1, pseudo: 'ana', parties: 3, survies: 3 },
+		{ rang: 2, pseudo: 'bob', parties: 3, survies: 1 },
+		{ rang: 3, pseudo: 'cleo', parties: 2, survies: 1 },
+		{ rang: 4, pseudo: 'dan', parties: 1, survies: 1 },
+	]);
+});
+
+it('pagine sans perdre les rangs', async () => {
+	const r = await http().get('/api/classement?limite=2&page=2').set('Authorization', entete).expect(200);
+	expect(r.body.donnees.map((l: { rang: number; pseudo: string }) => [l.rang, l.pseudo])).toEqual([[3, 'cleo'], [4, 'dan']]);
+	expect(r.body.meta).toEqual({ page: 2, limite: 2, total: 4, totalPages: 2 });
+});
+```
+
+Avec `bob` et `cleo`, les deux ont **une** survie : c'est le nombre de parties (3 contre 2) qui les départage. Sans ce deuxième critère, leur ordre ne serait pas garanti.
+
+## Tester les filtres
+
+```ts title="test/villages.e2e-spec.ts"
+it('filtre par phase et compte le total filtré', async () => {
+	const r = await http().get('/v2/api/villages?phase=nuit&limite=100').set('Authorization', entete).expect(200);
+	expect(r.body.meta.total).toBe(12);
+	expect(r.body.donnees.every((v: { phase: string }) => v.phase === 'nuit')).toBe(true);
+});
+
+it('tri par id décroissant est bien décroissant', async () => {
+	const r = await http().get('/v2/api/villages?tri=id&ordre=desc&limite=5').set('Authorization', entete).expect(200);
+	expect(r.body.donnees.map((v: { id: number }) => v.id)).toEqual([25, 24, 23, 22, 21]);
+});
+
+it.each(['tri=motdepasse', 'ordre=up', 'phase=aube'])('refuse ?%s avec 400', async (qs) => {
+	await http().get(`/v2/api/villages?${qs}`).set('Authorization', entete).expect(400);
+});
+```
+
+<Exercices partie={9} de={10} a={12}>
+
+<Exercice numero="9.10" titre="Filtrer le catalogue">
+Ajoute à `GET /v2/api/produits` les filtres `categorie`, `prixMin` et `prixMax` (en centimes, entiers positifs), et n'affiche que les produits actifs. `prixMin` supérieur à `prixMax` doit donner un `400` avec un message explicite (`prixMin ne peut pas dépasser prixMax`). Écris les tests : un filtre combiné, un total qui suit le filtre, et le `400`.
+</Exercice>
+
+<Exercice numero="9.11" titre="Trier avec une liste blanche">
+Ajoute `tri` (`id`, `nom`, `prix`) et `ordre` avec une liste blanche, comme `COLONNES_DE_TRI`. Écris un test pour `?tri=prix&ordre=desc` et un pour `?tri=motdepasse` (`400`). Puis, **dans une branche jetable**, colle `tri` directement dans `orderBy` et envoie `id DESC, (SELECT 1/0)` : note l'erreur et explique pourquoi elle prouve un problème. Enfin, retire le `if (q.tri !== 'id')` de ton départage et écris le test qui échoue.
+</Exercice>
+
+<Exercice numero="9.12" titre="Le classement des vendeurs">
+Écris `GET /api/classement-vendeurs` : pour chaque vendeur, le nombre de commandes et le chiffre d'affaires total, du plus élevé au plus faible, paginé, avec le rang. Utilise une agrégation (`COUNT`, `SUM`, `groupBy`) et `getRawMany`. Écris un test sur un jeu de données à la main, avec deux vendeurs à égalité de chiffre d'affaires pour vérifier ton critère de départage.
+</Exercice>
+
+</Exercices>

@@ -1,0 +1,191 @@
+---
+title: "a · Documenter avec Swagger"
+description: "Une documentation générée depuis ton code, testée, que tout développeur peut essayer dans son navigateur."
+projet: loup-garou
+duree: 50
+prerequis: Partie 4 (DTO et validation), partie 7 (authentification par jeton), partie 6 (tests de bout en bout).
+exercices: 3
+sidebar:
+  order: 1
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Ton API a maintenant des villages, des participations, une authentification. Pour l'utiliser, un développeur front doit savoir : quelles routes existent, quels paramètres elles acceptent, ce qu'elles renvoient, quelles erreurs attendre. Tant que ça vit dans ta tête ou dans ton code, il te pose la question à chaque fois.
+
+**OpenAPI** est un format standard (un fichier JSON) qui décrit une API HTTP. **Swagger UI** est une page web qui lit ce fichier et le rend lisible, avec un bouton « Essayer » sur chaque route. Le module `@nestjs/swagger` fabrique le fichier **à partir de ton code** : tes contrôleurs et tes DTO. La documentation ne peut donc pas, en principe, raconter autre chose que ce que fait l'API.
+
+## Installer et publier
+
+```bash
+npm install @nestjs/swagger
+```
+
+Le module s'appuie sur `class-validator` et `class-transformer`, déjà installés depuis la partie 4. On isole sa configuration dans une fonction, comme `configurerApp` en partie 6, pour que les tests puissent l'appeler aussi :
+
+```ts title="src/configurer-swagger.ts"
+import { INestApplication } from '@nestjs/common';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+
+export function configurerSwagger(app: INestApplication) {
+	const config = new DocumentBuilder()
+		.setTitle('API Loup-Garou')
+		.setDescription('Villages, participations et classement.')
+		.setVersion('2.0')
+		.addBearerAuth()
+		.build();
+	const document = SwaggerModule.createDocument(app, config);
+	SwaggerModule.setup('docs', app, document);
+	return document;
+}
+```
+
+```ts title="src/main.ts" {3,4}
+const app = await NestFactory.create(AppModule);
+configurerApp(app);
+configurerSwagger(app);
+await app.listen(process.env.PORT ?? 3000);
+```
+
+Lance l'application : l'interface est sur `http://localhost:3000/docs`, et le fichier OpenAPI brut sur `http://localhost:3000/docs-json`. `addBearerAuth()` ajoute un bouton **Authorize** où coller un jeton JWT (partie 7) : Swagger UI l'enverra ensuite dans l'en-tête `Authorization: Bearer …` de chaque essai.
+
+Deux choses à savoir tout de suite, vérifiées sur un projet réel :
+
+- **L'ordre compte.** `configurerSwagger` doit être appelé **avant** que l'application ne démarre. Appelé après `app.init()`, il génère le document mais `/docs` répond `404`. Dans `main.ts`, avant `listen`, tout va bien ; dans un test, on l'appelle avant `init` (on le fait plus bas).
+- **`/docs` n'est pas protégée par ton `AuthGuard`.** Interface et fichier répondent `200` sans jeton, même avec le guard global de la partie 7. C'est normal : Swagger enregistre ses routes lui-même, en dehors des contrôleurs. À toi de décider si la documentation doit être publique. Une solution simple : n'appeler `configurerSwagger` que si `process.env.NODE_ENV !== 'production'`.
+
+## Décrire les routes
+
+Sans aucun décorateur, Swagger liste déjà tes routes et leurs paramètres. Mais il ne sait pas ce qu'elles font, ni ce qu'elles renvoient. On l'aide avec des décorateurs :
+
+```ts title="src/villages/villages.controller.ts" {1,2,8,9}
+@ApiTags('villages')
+@ApiBearerAuth()
+@Controller('api/villages')
+export class VillagesController {
+	constructor(private readonly service: VillagesService) {}
+
+	@Get(':id')
+	@ApiOperation({ summary: 'Détail d\'un village' })
+	@ApiOkResponse({ type: VillageReponseDto })
+	trouver(@Param('id', ParseIntPipe) id: number) {
+		return this.service.trouver(id);
+	}
+}
+```
+
+- Ligne 1 : `@ApiTags` regroupe les routes dans l'interface.
+- Ligne 2 : `@ApiBearerAuth` indique que les routes de ce contrôleur demandent un jeton (elle **documente** seulement : c'est ton `AuthGuard` qui protège réellement). Ne la mets pas sur une route marquée `@Public()`.
+- Lignes 8 et 9 : un résumé et le type de la réponse réussie.
+
+Le type de réponse est une classe, décrite avec `@ApiProperty` :
+
+```ts title="src/villages/dto/village-reponse.dto.ts"
+export class VillageReponseDto {
+	@ApiProperty({ example: 12 }) id: number;
+	@ApiProperty({ example: 'Village de Tercelieu' }) nom: string;
+	@ApiProperty({ enum: ['jour', 'nuit'], example: 'jour' }) phase: 'jour' | 'nuit';
+	@ApiProperty({ type: String, format: 'date-time' }) creeLe: Date;
+}
+```
+
+Pourquoi une classe séparée de l'entité `Village` ? Parce que la réponse est un **contrat** avec les clients, et l'entité un détail de ta base. Si demain tu ajoutes une colonne interne à `Village`, la documentation n'a pas à en parler.
+
+Pour les DTO **d'entrée** (le corps d'un `POST`, les paramètres de requête), c'est la même chose :
+
+```ts title="src/villages/dto/creer-village.dto.ts"
+export class CreerVillageDto {
+	@ApiProperty({ description: 'Nom affiché du village', minLength: 3, maxLength: 40, example: 'Village de Tercelieu' })
+	@IsString()
+	@MinLength(3)
+	@MaxLength(40)
+	nom: string;
+
+	@ApiProperty({ enum: ['jour', 'nuit'], default: 'jour' })
+	@IsIn(['jour', 'nuit'])
+	phase: 'jour' | 'nuit' = 'jour';
+}
+```
+
+Sans `@ApiProperty`, la classe apparaît dans le document avec `"properties": {}` : elle existe, mais elle est vide, et Swagger UI affichera un corps `{}` à envoyer. Les décorateurs de `class-validator` (`@MinLength`…) n'ont **pas** d'effet sur la documentation : ils valident, mais ne décrivent pas. Il faut donc dire deux fois `minLength: 3` (voir plus bas pour un moyen d'éviter la répétition).
+
+Un DTO qui **hérite** d'un autre hérite aussi de sa documentation : `ListerVillagesDto extends PaginationDto` (sections c et d) montre `page` et `limite` dans l'interface, sans rien recopier.
+
+## Le plugin du CLI : pratique, mais à double tranchant
+
+Le CLI de Nest peut remplir ces décorateurs pour toi, à la compilation : il lit les types TypeScript, les décorateurs de `class-validator` et les commentaires. On l'active dans `nest-cli.json` :
+
+```json title="nest-cli.json" {5}
+{
+	"collection": "@nestjs/schematics",
+	"sourceRoot": "src",
+	"compilerOptions": {
+		"plugins": [{ "name": "@nestjs/swagger", "options": { "introspectComments": true } }]
+	}
+}
+```
+
+Avec ça, un DTO sans aucun `@ApiProperty` :
+
+```ts
+export class CreerVillageDto {
+	/** Nom affiché du village */
+	@IsString() @MinLength(3) @MaxLength(40)
+	nom: string;
+
+	@IsIn(['jour', 'nuit'])
+	phase: 'jour' | 'nuit' = 'jour';
+}
+```
+
+donne, après `nest build`, le schéma `nom` (avec sa description tirée du commentaire, `minLength: 3` et `maxLength: 40` tirés des décorateurs) et `phase` (avec son `default` et son `enum`).
+
+Le piège : **le plugin ne s'exécute que dans la compilation du CLI.** Vitest compile ton code lui-même (partie 6), sans passer par le CLI. Le même DTO donne, dans un test, `{"type":"object","properties":{}}` : vide. Un test qui compare la documentation à une référence (voir ci-dessous) verrait donc une documentation **différente** de celle de l'application lancée. Dans ce cours, on écrit les `@ApiProperty` à la main : c'est plus long, mais le résultat est le même partout. Le plugin reste une option si tu acceptes de ne tester la documentation que sur le code compilé.
+
+## Tester la documentation
+
+La documentation est une partie de ton API, elle se teste comme le reste. On génère le document dans un test (avant `init`, on l'a vu) et on vérifie ce qui compte :
+
+```ts title="test/swagger.e2e-spec.ts"
+beforeAll(async () => {
+	const module = await Test.createTestingModule({ imports: [AppModule] }).compile();
+	app = module.createNestApplication();
+	configurerApp(app);
+	document = configurerSwagger(app);
+	await app.init();
+});
+
+it('décrit les routes', () => {
+	expect(Object.keys(document.paths)).toContain('/api/villages/{id}');
+	expect(document.paths['/api/villages/{id}']?.get?.summary).toBe('Détail d\'un village');
+});
+
+it('déclare l\'authentification par jeton', () => {
+	expect(document.components?.securitySchemes).toHaveProperty('bearer');
+});
+
+it('sert l\'interface sur /docs et le JSON sur /docs-json, sans jeton', async () => {
+	await request(app.getHttpServer()).get('/docs').expect(200);
+	const json = await request(app.getHttpServer()).get('/docs-json').expect(200);
+	expect(json.body.info.title).toBe('API Loup-Garou');
+});
+```
+
+La dernière section de cette partie va plus loin : figer tout le document dans un fichier, pour que **toute** modification de l'API soit visible en relecture.
+
+<Exercices partie={9} de={1} a={3}>
+
+<Exercice numero="9.1" titre="Publier la documentation de la marketplace">
+Installe `@nestjs/swagger`, écris `configurerSwagger` pour ta marketplace (titre, description, authentification par jeton) et appelle-la dans `main.ts`. Ouvre `/docs`, clique sur **Authorize**, colle un jeton obtenu par ta route de connexion (partie 7) et essaie une route protégée depuis l'interface.
+</Exercice>
+
+<Exercice numero="9.2" titre="Décrire les données du catalogue">
+Crée un `ProduitReponseDto` avec `@ApiProperty` (description et exemple de chaque champ, dont le prix en centimes) et branche-le sur les routes du catalogue avec `@ApiOkResponse`. Ajoute `@ApiTags` et `@ApiBearerAuth` à tes contrôleurs, sauf sur les routes `@Public()`. Puis retire volontairement les `@ApiProperty` d'un DTO, regarde `/docs-json`, et note ce que devient son schéma.
+</Exercice>
+
+<Exercice numero="9.3" titre="Tester la documentation">
+Écris un test de bout en bout qui génère le document avant `app.init()` et vérifie : le titre, la présence de trois de tes routes, le schéma d'authentification et le fait que `/docs` répond sans jeton. Déplace ensuite l'appel à `configurerSwagger` **après** `app.init()` et note ce que renvoie `/docs`. Enfin, décide de la politique de ta marketplace (documentation publique ou non en production) et applique-la avec `NODE_ENV`.
+</Exercice>
+
+</Exercices>

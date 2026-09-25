@@ -1,0 +1,136 @@
+---
+title: "b · Versionner son API"
+description: "Changer une réponse sans casser les clients existants : versions dans l'URL, ancienne version annoncée comme obsolète."
+projet: loup-garou
+duree: 45
+prerequis: Section a (documentation) ; partie 6 (tests de bout en bout).
+exercices: 3
+sidebar:
+  order: 2
+---
+
+import Exercices from '../../../components/Exercices.astro';
+import Exercice from '../../../components/Exercice.astro';
+
+Ton API a des clients : un front, peut-être une application mobile, peut-être un autre service. Le jour où tu changes ce que renvoie une route, ils peuvent tous se casser en même temps. La section suivante va justement le faire : `GET /api/villages` renvoie aujourd'hui un **tableau** de villages, et une liste paginée doit renvoyer un **objet** (les villages, plus des informations sur la page). Un client qui fait `villages.map(...)` planterait.
+
+## Ce qui casse, ce qui ne casse pas
+
+| Changement | Casse un client existant ? |
+|---|---|
+| Ajouter un champ à une réponse | Non (un client ignore ce qu'il ne connaît pas) |
+| Ajouter une route | Non |
+| Ajouter un paramètre **facultatif** | Non |
+| Retirer ou renommer un champ | **Oui** |
+| Changer le type d'un champ (`number` → `string`) | **Oui** |
+| Entourer un tableau d'un objet | **Oui** |
+| Ajouter un paramètre **obligatoire** | **Oui** |
+
+Tant que tu n'as fait que des changements de la première moitié du tableau, tu n'as pas besoin de versions. Pour les autres, on publie une **nouvelle version** à côté de l'ancienne, on laisse aux clients le temps de migrer, puis on retire l'ancienne.
+
+## Trois façons d'indiquer la version
+
+NestJS en propose trois : dans l'**URL** (`/v2/api/villages`), dans un **en-tête** (`X-API-Version: 2`), ou dans le **type de média** (`Accept: application/json;v=2`). On retient l'URL : elle est visible partout (journaux, navigateur, documentation) et un lien la contient en entier. Les deux autres ont des pièges qu'on a mesurés, plus bas.
+
+Un point de départ sensible : les clients actuels appellent `/api/villages`, **sans** version. Ils ne doivent rien avoir à changer. On active donc le versionnement avec `VERSION_NEUTRAL` comme version par défaut :
+
+```ts title="src/configurer-app.ts" {7}
+import { VersioningType, VERSION_NEUTRAL } from '@nestjs/common';
+
+export function configurerApp(app: INestApplication) {
+	app.use(helmet());
+	app.enableCors({ origin: ['http://localhost:5173'] });
+	app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }));
+	app.enableVersioning({ type: VersioningType.URI, defaultVersion: VERSION_NEUTRAL });
+}
+```
+
+Une route sans `@Version` est « neutre » : elle répond sur son URL d'origine, exactement comme avant. Si tu avais mis `defaultVersion: '1'` à la place, la même route serait passée sous `/v1/api/villages` et `/api/villages` aurait répondu `404` : tous tes clients existants auraient cassé le jour du déploiement.
+
+## Une route, deux versions
+
+```ts title="src/villages/villages.controller.ts" {4,5,10}
+@Get()
+@ApiOperation({ summary: 'Liste tous les villages (ancienne version, sans pagination)', deprecated: true })
+@ApiOkResponse({ type: [VillageReponseDto] })
+@Header('Deprecation', 'true')
+@Header('Sunset', 'Wed, 31 Dec 2031 23:59:59 GMT')
+listerV1() {
+	return this.service.toutes();
+}
+
+@Version('2')
+@Get()
+@ApiOperation({ summary: 'Liste les villages' })
+lister() {
+	return this.service.toutes(); // la section suivante le fait évoluer
+}
+```
+
+- La première méthode n'a pas de `@Version` : c'est l'ancienne, à l'adresse habituelle `/api/villages`.
+- Lignes 4 et 5 : deux en-têtes préviennent les clients. `Deprecation: true` dit « cette route est obsolète » ; `Sunset` (norme RFC 8594) donne la date à partir de laquelle elle pourra disparaître. Ce sont les seuls avertissements qu'un programme client peut lire tout seul : ta communication (un e-mail, une note de version) ne prévient que les humains.
+- `deprecated: true` fait barrer la route dans Swagger UI et l'ajoute au fichier OpenAPI.
+- Ligne 10 : la nouvelle version. `@Version('2')` la place sous **`/v2/api/villages`**. Le `v2` arrive **avant** `api/`, parce que ce cours a écrit `api/` dans le chemin du contrôleur : l'URL est `version + chemin du contrôleur`.
+
+Le document Swagger contient les deux chemins, `/api/villages` (barré) et `/v2/api/villages`.
+
+### Les routes qui ne changent pas
+
+Reste un piège. Le détail d'un village (`GET /api/villages/:id`) est neutre lui aussi, et une route neutre ne répond **pas** sous une version : `/v2/api/villages/3` donnerait `404`. Un client qui passe en v2 devrait alors mélanger des URL avec et sans `/v2`. On dit explicitement que la route vit dans les deux mondes :
+
+```ts title="src/villages/villages.controller.ts" {1}
+@Version([VERSION_NEUTRAL, '2'])
+@Get(':id')
+trouver(@Param('id', ParseIntPipe) id: number) {
+	return this.service.trouver(id);
+}
+```
+
+Elle répond alors sur `/api/villages/3` et sur `/v2/api/villages/3`. En revanche `/v1/api/villages/3` reste un `404` : la version 1 n'a jamais eu de préfixe, et n'en reçoit pas.
+
+## Tester les deux versions
+
+```ts title="test/villages.e2e-spec.ts"
+it('v1 (sans version) renvoie un tableau et annonce sa fin de vie', async () => {
+	const r = await http().get('/api/villages').set('Authorization', entete).expect(200);
+	expect(Array.isArray(r.body)).toBe(true);
+	expect(r.headers['deprecation']).toBe('true');
+	expect(r.headers['sunset']).toContain('2031');
+});
+
+it('v2 n\'annonce rien', async () => {
+	const r = await http().get('/v2/api/villages').set('Authorization', entete).expect(200);
+	expect(r.headers['deprecation']).toBeUndefined();
+});
+
+it('le détail répond sans version comme en v2, mais pas en v1 explicite', async () => {
+	await http().get('/api/villages/1').set('Authorization', entete).expect(200);
+	await http().get('/v2/api/villages/1').set('Authorization', entete).expect(200);
+	await http().get('/v1/api/villages/1').set('Authorization', entete).expect(404);
+});
+```
+
+## Pourquoi pas l'en-tête ?
+
+Le même essai avec `VersioningType.HEADER` (en-tête `X-API-Version`) a montré deux surprises, dans un petit projet de test :
+
+- **L'ordre de déclaration décide.** Une route neutre correspond à **toutes** les versions demandées. Si elle est écrite avant la route `@Version('2')`, une requête avec `X-API-Version: 2` reçoit quand même la réponse de la route neutre. Avec l'URL, les deux routes ont des adresses différentes et ne se marchent pas dessus.
+- **`defaultVersion: '1'` ne suffit pas.** Une requête sans l'en-tête reçoit un `404`, alors qu'on attendrait la version 1.
+
+Ce n'est pas un défaut de l'en-tête (beaucoup d'API l'utilisent), mais plus de vigilance à tester. Pour une première API, l'URL est la plus prévisible.
+
+<Exercices partie={9} de={4} a={6}>
+
+<Exercice numero="9.4" titre="Une v2 pour le catalogue">
+Active le versionnement par URL avec `VERSION_NEUTRAL` sur ta marketplace. Garde `GET /api/produits` tel quel (la version sans numéro) et ajoute `GET /v2/api/produits` qui, pour l'instant, renvoie la même chose. Écris les tests de bout en bout : les deux URL répondent `200`, et `/v1/api/produits` répond `404`.
+</Exercice>
+
+<Exercice numero="9.5" titre="Annoncer la fin de l'ancienne version">
+Sur l'ancienne route, ajoute les en-têtes `Deprecation` et `Sunset` (une date dans un an) et marque-la `deprecated: true` dans Swagger. Écris deux tests : la v1 envoie les en-têtes, la v2 n'en envoie aucun. Vérifie dans `/docs` que la v1 est barrée et que les deux chemins apparaissent.
+</Exercice>
+
+<Exercice numero="9.6" titre="Les routes inchangées">
+Ajoute `GET /api/produits/:id` (sans version). Vérifie par un test que `/v2/api/produits/1` répond `404`, puis corrige avec `@Version([VERSION_NEUTRAL, '2'])` et montre que les deux adresses répondent alors `200` et que `/v1/api/produits/1` reste un `404`. Note dans un commentaire de test pourquoi ce dernier cas est normal.
+</Exercice>
+
+</Exercices>
