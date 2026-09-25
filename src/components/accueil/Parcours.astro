@@ -2,6 +2,7 @@
 // « Le parcours » : les 13 parties regroupées en 3 étapes (src/parties.mjs).
 // Usage MDX : <Parcours titre="Le parcours">Texte d'introduction…</Parcours>
 import { parties, etapes } from '../../parties.mjs';
+import { avecBase } from '../../base.ts';
 
 interface Props {
 	titre: string;
@@ -28,7 +29,7 @@ const prefixe = lang === 'en' ? '/en' : '';
 						{parties.slice(etape.de, etape.a + 1).map(([dir, fr, en], i) => (
 							<li>
 								<span class="numero" aria-hidden="true">{etape.de + i}</span>
-								<a href={`${prefixe}/${dir}/`}>
+								<a href={avecBase(`${prefixe}/${dir}/`)}>
 									<span class="sr-only">{lang === 'en' ? 'Part' : 'Partie'} {etape.de + i} : </span>
 									{lang === 'en' ? en : fr}
 								</a>

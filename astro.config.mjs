@@ -5,6 +5,9 @@ import { parties } from './src/parties.mjs';
 import { GITHUB } from './src/site.mjs';
 
 export default defineConfig({
+	// GitHub Pages : https://bu7ch.github.io/nestjs-open/
+	site: 'https://bu7ch.github.io',
+	base: '/nestjs-open',
 	integrations: [
 		starlight({
 			title: { fr: 'NestJS Open', en: 'NestJS Open' },

@@ -9,6 +9,7 @@ import SiteTitle from './SiteTitle.astro';
 import ThemeSelect from './ThemeSelect.astro';
 import LangueBascule from './LangueBascule.astro';
 import { GITHUB } from '../site.mjs';
+import { avecBase } from '../base.ts';
 
 const { entry, hasSidebar } = Astro.locals.starlightRoute;
 const accueil = Boolean(entry.data.hero);
@@ -27,8 +28,8 @@ const t = Astro.locals.t;
 		{
 			accueil && (
 				<nav class="liens" aria-label={t('entete.nav')}>
-					<a href={`${prefixe}/#le-parcours`}>{t('entete.parcours')}</a>
-					<a href={`${prefixe}/a-propos/`}>{t('entete.commentCaMarche')}</a>
+					<a href={avecBase(`${prefixe}/#le-parcours`)}>{t('entete.parcours')}</a>
+					<a href={avecBase(`${prefixe}/a-propos/`)}>{t('entete.commentCaMarche')}</a>
 					<a href={GITHUB}>GitHub</a>
 				</nav>
 			)

@@ -3,6 +3,7 @@
 // Titre, sous-titre et boutons viennent du frontmatter `hero` de index.mdx ;
 // la ligne de prérequis et la légende du panneau viennent des traductions.
 import PanneauApi from './PanneauApi.astro';
+import { avecBase } from '../../base.ts';
 
 const { data } = Astro.locals.starlightRoute.entry;
 const { title = data.title, tagline, actions = [] } = data.hero || {};
@@ -16,7 +17,7 @@ const { title = data.title, tagline, actions = [] } = data.hero || {};
 			actions.length > 0 && (
 				<div class="actions">
 					{actions.map(({ link, text, variant }) => (
-						<a href={link} class:list={['action', variant === 'minimal' ? 'secondaire' : 'principale']}>
+						<a href={avecBase(link)} class:list={['action', variant === 'minimal' ? 'secondaire' : 'principale']}>
 							{text}
 						</a>
 					))}

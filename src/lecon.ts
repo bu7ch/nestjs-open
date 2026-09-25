@@ -1,5 +1,6 @@
 // Situe une page dans le cours : numéro et titre de la partie, lettre de section.
 // Sert au fil d'Ariane (PageTitle) et au libellé mobile du header (SiteTitle).
+import { avecBase } from './base.ts';
 import { parties } from './parties.mjs';
 
 export interface Situation {
@@ -23,7 +24,7 @@ export function situer(id: string, locale: string | undefined): Situation | unde
 	return {
 		partie,
 		titrePartie: en ? infos[2] : infos[1],
-		hrefPartie: `${en ? '/en' : ''}/${infos[0]}/`,
+		hrefPartie: avecBase(`${en ? '/en' : ''}/${infos[0]}/`),
 		lettre,
 	};
 }

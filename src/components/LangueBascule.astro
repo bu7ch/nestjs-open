@@ -1,12 +1,14 @@
 ---
 // Bouton de langue de la maquette : affiche la langue courante (« FR ») et mène à
 // la même page dans l'autre langue. Le site n'a que deux langues.
+import { avecBase, sansBase } from '../base.ts';
+
 interface Props {
 	class?: string;
 }
 const enAnglais = Astro.currentLocale === 'en';
-const chemin = Astro.url.pathname;
-const cible = enAnglais ? chemin.replace(/^\/en(\/|$)/, '/') : `/en${chemin}`;
+const chemin = sansBase(Astro.url.pathname);
+const cible = avecBase(enAnglais ? chemin.replace(/^\/en(\/|$)/, '/') : `/en${chemin}`);
 ---
 
 <a
